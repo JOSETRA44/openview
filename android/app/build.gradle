@@ -1,0 +1,136 @@
+// Copyright 2026, OpenView contributors.
+// SPDX-License-Identifier: BSL-1.0
+
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+    id 'kotlin-kapt'
+    id 'dagger.hilt.android.plugin'
+    id 'com.mikepenz.aboutlibraries.plugin'
+}
+
+def monadoDir = new File(rootDir, 'third_party/monado')
+
+// Shown in the About screen, so a bug report says which Monado it ran on.
+def monadoVersion = { ->
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'describe', '--always', '--match', 'v*'
+            standardOutput = stdout
+            workingDir monadoDir
+        }
+        return stdout.toString().trim()
+    } catch (ignored) {
+        return 'unknown'
+    }
+}
+
+android {
+    namespace 'dev.openview.runtime'
+    compileSdk project.sharedCompileSdk
+    buildToolsVersion = buildToolsVersion
+    ndkVersion "${ndk_version}"
+
+    defaultConfig {
+        applicationId 'dev.openview.runtime'
+        minSdkVersion project.sharedMinSdk
+        targetSdkVersion project.sharedTargetSdk
+        versionCode 1
+        versionName '0.1.0'
+
+        resValue "string", "monado_lib_version", monadoVersion()
+
+        ndk {
+            // arm64 for phones, x86_64 for the emulator.
+            abiFilters 'arm64-v8a', 'x86_64'
+        }
+
+        externalNativeBuild {
+            cmake {
+                // The package name is compiled into the native code: the client
+                // library uses it to find the service, the drivers to open sensors.
+                arguments "-DXRT_ANDROID_PACKAGE=${applicationId}",
+                    "-DEigen3_DIR=${project.eigenCMakeDir}",
+                    "-DANDROID_PLATFORM=${project.sharedMinSdk}",
+                    "-DANDROID_STL=c++_static",
+                    "-DANDROID_ARM_NEON=TRUE"
+                targets "openxr_openview", "openview-service"
+            }
+            if (project.pythonBinary != null) {
+                cmake.arguments "-DPYTHON_EXECUTABLE=${project.pythonBinary}"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+        debug {
+            debuggable true
+            jniDebuggable true
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "${rootDir}/CMakeLists.txt"
+            version "${cmake_version}"
+        }
+    }
+
+    hilt {
+        enableAggregatingTask = true
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+    packagingOptions {
+        resources {
+            excludes += ['META-INF/*.kotlin_module']
+        }
+        jniLibs {
+            // The OpenXR loader dlopen()s the runtime from the extracted lib dir.
+            useLegacyPackaging true
+        }
+    }
+    lint {
+        fatal 'StopShip'
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("debug")) {
+        packaging.jniLibs.keepDebugSymbols.add("**")
+    }
+}
+
+aboutLibraries {
+    additionalLicenses = ["mit", "mpl_2_0", "bsl_1_0"]
+}
+
+dependencies {
+    implementation project(':src:xrt:auxiliary')
+    implementation project(':src:xrt:auxiliary:cardboard')
+    implementation project(':src:xrt:ipc')
+    implementation project(':src:xrt:targets:android_common')
+
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
+    implementation "androidx.constraintlayout:constraintlayout:$androidxConstraintLayoutVersion"
+    implementation "com.google.android.material:material:$materialVersion"
+
+    implementation "com.mikepenz:aboutlibraries-core:${latestAboutLibsRelease}"
+    implementation "com.mikepenz:aboutlibraries:${latestAboutLibsRelease}"
+    implementation "androidx.cardview:cardview:$androidxCardViewVersion"
+    implementation "androidx.recyclerview:recyclerview:$androidxRecyclerViewVersion"
+
+    implementation "com.google.dagger:hilt-android:$hiltVersion"
+    kapt "com.google.dagger:hilt-compiler:$hiltVersion"
+}

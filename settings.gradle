@@ -1,0 +1,41 @@
+// Copyright 2026, OpenView contributors.
+// SPDX-License-Identifier: BSL-1.0
+
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}
+
+rootProject.name = 'openview'
+
+// Monado's Android libraries reference each other by these exact project
+// paths, so they are mapped onto the submodule instead of being renamed.
+def monado = new File(rootDir, 'third_party/monado')
+
+include ':src:xrt:auxiliary'
+include ':src:xrt:auxiliary:cardboard'
+include ':src:xrt:ipc'
+include ':src:xrt:targets:android_common'
+
+project(':src').projectDir = new File(monado, 'src')
+project(':src:xrt').projectDir = new File(monado, 'src/xrt')
+project(':src:xrt:targets').projectDir = new File(monado, 'src/xrt/targets')
+project(':src:xrt:auxiliary').projectDir = new File(monado, 'src/xrt/auxiliary/android')
+project(':src:xrt:auxiliary:cardboard').projectDir = new File(monado, 'src/xrt/auxiliary/android_cardboard')
+project(':src:xrt:ipc').projectDir = new File(monado, 'src/xrt/ipc/android')
+project(':src:xrt:targets:android_common').projectDir = new File(monado, 'src/xrt/targets/android_common')
+
+include ':app'
+project(':app').projectDir = new File(rootDir, 'android/app')

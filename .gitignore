@@ -9,3 +9,4 @@ local.properties
 .vs/
 .vscode/
 CMakeUserPresets.json
+android/app/build/

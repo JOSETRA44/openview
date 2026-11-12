@@ -1,9 +1,25 @@
 # Copyright 2026, OpenView contributors.
 # SPDX-License-Identifier: BSL-1.0
 
-# The service is a plain executable only off Android: there it is hosted by an
-# Android Service inside the APK (Monado's ipc/android), built by Gradle.
-if(NOT ANDROID)
+if(ANDROID)
+	# On Android the service is a library loaded by Monado's Java IPC module
+	# (the serviceLibName Gradle property) inside an Android Service. The JNI
+	# entry points are Monado's, so its source file is compiled as is.
+	add_library(
+		openview-service MODULE ${MONADO_ROOT}/src/xrt/targets/service-lib/service_target.cpp
+		)
+	target_link_libraries(
+		openview-service
+		PRIVATE
+			aux_util
+			st_prober
+			ipc_server
+			comp_main
+			target_lists
+			target_instance
+			xrt-external-jni-wrap
+		)
+else()
 	add_executable(openview-service src/service_main.c)
 	target_link_libraries(
 		openview-service

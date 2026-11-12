@@ -47,7 +47,6 @@ jobs:
           XR_RUNTIME_JSON="$PWD/build/openxr_openview-dev.json" openxr_runtime_list || { cat service.log; exit 1; }
           tail -n 30 service.log
 
-  # Baseline: Monado's own installable runtime, with our patches applied.
   android:
     runs-on: ubuntu-24.04
     steps:
@@ -55,7 +54,7 @@ jobs:
         with:
           submodules: recursive
 
-      # The APK version comes from `git describe`, which needs history and tags.
+      # The About screen reports Monado's version from `git describe`.
       - name: Fetch Monado history
         run: git -C third_party/monado fetch --unshallow --tags --filter=blob:none origin
 
@@ -67,17 +66,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Android NDK and CMake
+      - name: Android NDK, CMake and host tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends glslang-tools
+          sudo apt-get install -y --no-install-recommends glslang-tools libeigen3-dev
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
 
       - name: Build APK
-        working-directory: third_party/monado
-        run: ./gradlew --no-daemon assembleOutOfProcessDebug
+        run: ./gradlew --no-daemon :app:assembleDebug
 
       - uses: actions/upload-artifact@v4
         with:
-          name: monado-outOfProcess-debug-apk
-          path: third_party/monado/src/xrt/targets/openxr_android/build/outputs/apk/**/*.apk
+          name: openview-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
