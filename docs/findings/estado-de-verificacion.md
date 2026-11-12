@@ -16,7 +16,12 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Aviso cuando falta el permiso de superposición | Verificado en ese dispositivo |
 | Predicción de pose: conversión de reloj y límite | Verificado en ese dispositivo: 0 de 6060 consultas recortadas |
 | Modelo de latencia de pantalla (parche 0002) | Verificado en ese dispositivo a 60 Hz; sin probar a 90/120/144 Hz |
-| Cadencia real de frames | Medida: 59 fps, 6 % de frames tardíos. Sin corregir, ver [ADR-0002](../adr/0002-temporizacion-de-pantalla-en-android.md) |
+| Compositor enganchado al vsync (parche 0003) | Verificado en ese dispositivo a 60 Hz: 0.2 % de frames descartados, latencia 29–32 ms |
+| Grabadora de sensores (`tools/sensor-recorder`) | Verificada en ese dispositivo: cámara, IMU y reporte del dispositivo |
+| `analyze.py`: estadísticas y exportación EuRoC | Verificado con una captura real; estimadores probados con señales sintéticas |
+| Desfase cámara–IMU | No medido: falta una captura con giros |
+| Reproducir un dataset propio en Monado (`drivers/euroc`) | No ejecutado |
+| Trayectoria de referencia (ARCore) | No implementado |
 | Efecto visual de la predicción, error angular, latencia percibida | No medido |
 | Térmica con una aplicación exigente | No medido; solo `hello_xr` |
 | Otros teléfonos y fabricantes | Ninguno probado |

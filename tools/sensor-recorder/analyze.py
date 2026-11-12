@@ -20,6 +20,10 @@ from pathlib import Path
 import numpy as np
 
 
+# Below this the gyro and image motion do not share a shape worth aligning.
+MIN_OFFSET_CORRELATION = 0.5
+
+
 def load_csv(path):
     """Returns the file as a float array, one row per line, header skipped."""
     with open(path, newline="") as f:
@@ -115,6 +119,10 @@ def camera_imu_offset(rec, frames, gyro, max_frames=600):
     # two axes in the image plane are compared.
     gyro_rate = np.hypot(gyro[:, 1], gyro[:, 2])
     offset_ms, score = estimate_time_offset(gyro[:, 0], gyro_rate, mid_ts, np.array(speed))
+    if score < MIN_OFFSET_CORRELATION:
+        # Without rotation the two signals are noise and the best match is arbitrary.
+        return {"gyro_minus_camera_ms": None, "correlation": score,
+                "note": "not enough rotation in the capture to estimate the offset"}
     return {"gyro_minus_camera_ms": offset_ms, "correlation": score}
 
 
@@ -125,11 +133,13 @@ def analyze(rec, with_offset=True):
     accel = load_csv(rec / "accel.csv")
     frames = frames[np.argsort(frames[:, 0])]
 
+    # The recorder leaves out whatever the device does not report.
+    camera = device["camera"]
     report = {
         "device": f"{device['manufacturer']} {device['model']} ({device.get('soc')})",
-        "camera_timestamp_source": device["camera"]["timestamp_source"],
-        "camera_hardware_level": device["camera"]["hardware_level"],
-        "camera_reports_intrinsics": device["camera"]["intrinsic_calibration"] is not None,
+        "camera_timestamp_source": camera.get("timestamp_source"),
+        "camera_hardware_level": camera.get("hardware_level"),
+        "camera_reports_intrinsics": "intrinsic_calibration" in camera,
         "gyro": interval_stats(gyro[:, 0]),
         "accel": interval_stats(accel[:, 0]),
         "camera": interval_stats(frames[:, 0]),

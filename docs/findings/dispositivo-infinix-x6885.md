@@ -94,6 +94,64 @@ resultó corto. El actual es 5 periodos acotado a 40–100 ms.
 **No medido**: el error angular real ni la latencia percibida. Haría falta una cámara externa
 o un banco de pruebas con movimiento conocido.
 
+## Compositor enganchado al vsync (parche 0003)
+
+**Verificado**, 60 s por corrida, misma app y mismo método:
+
+| | Pacer por temporizador | Con vsync de `Choreographer` |
+|---|---|---|
+| Frames descartados | ~6 % | 0.2 % |
+| Intervalos de 16 ms | 94 % | 100 % |
+| De entregar el buffer a mostrarlo | 26–44 ms, casi uniforme | 29–32 ms, mediana 31 |
+| Avisos de frame perdido del compositor | 24–29 por minuto | 20 por minuto |
+
+La latencia queda en 31 ms: los 25–26 ms fijos de SurfaceFlinger a pantalla más ~5 ms de
+espera hasta que SurfaceFlinger toma el buffer. El modelo de dos periodos del parche 0002
+(33.3 ms) acierta con 2 ms de error.
+
+Desplazar la fase con `XRT_COMPOSITOR_ANDROID_VSYNC_OFFSET_MS` para recortar esa espera:
+
+| Desplazamiento | Frames descartados | Latencia mediana |
+|---|---|---|
+| 0 (por defecto) | 0.2 % | 31 ms |
+| +3 ms | 25.8 % | 28 ms |
+| +5 ms | 13.3 % | 42 ms |
+| +7 ms | 0.0 % | 40 ms |
+
+El valor por defecto ya está junto al límite: hay unos 3 ms de margen antes de perder el vsync.
+**Hipótesis**: ese margen alcanza con una app exigente; solo se probó `hello_xr`.
+
+## Cámara e IMU (fase 2)
+
+**Verificado** con `tools/sensor-recorder`, captura de 8 s con el teléfono quieto:
+
+| Magnitud | Valor |
+|---|---|
+| Fuente de timestamp de la cámara | `REALTIME`, nivel de hardware `FULL` |
+| Latencia de captura suponiendo reloj de arranque | 78–86 ms, siempre positiva: la base declarada es cierta |
+| `CLOCK_BOOTTIME` − `CLOCK_MONOTONIC` | 119 974 s (33 h): confundirlos no es un error pequeño |
+| Cámara | 30.00 fps, sin saltos |
+| **Rolling shutter** (`SENSOR_ROLLING_SHUTTER_SKEW`) | **29.4 ms** a 640×480 |
+| Exposición en interior | 30 ms |
+| Giroscopio y acelerómetro a tasa máxima | 406 Hz, p99 del intervalo igual a la mediana; 1 salto de 9.9 ms en 8 s |
+| Canal directo de sensores | No soportado |
+| Intrínsecos y distorsión declarados por el dispositivo | No |
+| Estabilización óptica | No tiene |
+| Cámaras | 2 (trasera y frontal), sin cámaras físicas agrupadas: no hay estéreo |
+
+Consecuencias para el seguimiento 6DoF:
+
+- La lectura del sensor ocupa casi todo el periodo del frame. Un tracker que suponga
+  obturador global verá la imagen deformada con cualquier giro: modelar el rolling shutter
+  es obligatorio, no una mejora.
+- Con 30 ms de exposición hay desenfoque de movimiento fuerte. Habrá que limitar la
+  exposición y aceptar más ganancia.
+- Los intrínsecos hay que calibrarlos por dispositivo.
+- La regularidad del IMU y la base de tiempo compartida son buenas noticias.
+
+**No medido**: el desfase cámara–IMU. El estimador (`analyze.py`) necesita una captura con
+giros; con el teléfono quieto devuelve correlación ~0 y lo reporta como indeterminado.
+
 ## Térmica
 
 **Verificado**, `hello_xr` durante ~8 min cargando por USB: piel estable en 34.6–35.9 °C,

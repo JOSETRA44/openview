@@ -1,7 +1,6 @@
 # ADR-0002: Temporización de pantalla en Android
 
-Estado: aceptada la medida provisional (2026-11-12). La solución definitiva está propuesta,
-sin implementar.
+Estado: aceptada (2026-11-12). Ambas partes implementadas y medidas en un dispositivo.
 
 ## Contexto
 
@@ -22,21 +21,28 @@ mostrar. Es la estructura de SurfaceFlinger (el buffer se toma en un vsync y se 
 siguiente) y coincide con la mediana medida. El límite de predicción del driver se amplía en
 consecuencia a 5 periodos (parche 0001).
 
-**Después:** un pacer de compositor para Android basado en `AChoreographer`, que da el vsync
-real y, desde API 33, el instante de presentación esperado de cada frame. Sustituye la
-estimación por el dato del sistema y engancha el compositor en fase.
+**Enganche de fase (parche 0003):** un hilo recibe el vsync de `AChoreographer` y se lo pasa
+al pacer por el mismo camino que ya usa el modo directo de escritorio
+(`update_vblank_from_display_control`). Resultado medido: frames descartados de ~6 % a 0.2 % y
+latencia estable en 29–32 ms.
 
-## Por qué no directamente el pacer con Choreographer
+**Pendiente:** desde API 33 `AChoreographer` da además el instante de presentación esperado y
+la fecha límite de cada frame. Usarlos sustituiría el modelo de dos periodos por el dato del
+sistema. No se ha hecho: el modelo acierta con 2 ms de error en el dispositivo medido.
 
-Es una pieza nueva en la parte más sensible del compositor y necesita medirse en varios
-dispositivos y tasas de refresco. El modelo de dos periodos es una línea, corrige el error
-grande (≈30 ms) y deja el pequeño (±9 ms de fase).
+## Por qué el enganche es tan pequeño
+
+El pacer de Monado ya sabía realinearse con un vblank real; solo le faltaba una fuente en
+Android. Alimentarlo desde `Choreographer` son unas 60 líneas en `comp_target_swapchain.c` y
+no toca la lógica de predicción.
 
 ## Consecuencias
 
-- La predicción apunta al instante correcto en promedio; queda un error de fase de hasta
-  medio periodo por frame.
-- El 6 % de frames tardíos sigue ahí hasta tener el pacer real.
+- La predicción apunta al instante correcto con ~2 ms de error en el dispositivo medido.
+- La fase por defecto deja unos 3 ms de margen antes de perder el vsync. Falta comprobarlo
+  con una app exigente.
+- Solo ABIs de 64 bits: la variante de la API disponible desde nuestro nivel mínimo pasa el
+  tiempo en un `long`.
 - El modelo de dos periodos está comprobado en un solo dispositivo y a 60 Hz. Hay que
   repetir la medición a 90/120 Hz y en otro SoC antes de proponerlo upstream.
 - En hardware propio el camino de presentación se controla y este modelo no aplica: allí
