@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
-index e35fb385..ef34a81f 100644
+index e35fb385..0d69e1cd 100644
 --- a/src/xrt/drivers/android/android_sensors.c
 +++ b/src/xrt/drivers/android/android_sensors.c
 @@ -27,8 +27,12 @@
@@ -15,7 +15,7 @@ index e35fb385..ef34a81f 100644
  // Workaround to avoid the inclusion of "android_native_app_glue.h.
  #ifndef LOOPER_ID_USER
  #define LOOPER_ID_USER 3
-@@ -143,6 +147,51 @@ load_cardboard_distortion(struct android_device *d,
+@@ -143,6 +147,80 @@ load_cardboard_distortion(struct android_device *d,
  	return true;
  }
  
@@ -64,10 +64,39 @@ index e35fb385..ef34a81f 100644
 +	return MIN(at_timestamp_ns, now_ns + horizon_ns);
 +}
 +
++/*!
++ * Logs one line of timing statistics per second while debug logging is on.
++ * A summary instead of per-event traces because some vendors drop every
++ * log line below info, and sensors run at hundreds of events per second.
++ * Call with the lock held.
++ */
++static void
++android_stats_report_locked(struct android_device *d, int64_t now_ns)
++{
++	if (d->log_level > U_LOGGING_DEBUG || now_ns - d->stats.window_start_ns < U_TIME_1S_IN_NS) {
++		return;
++	}
++
++	if (d->stats.gyro_count > 0 && d->stats.pose_count > 0) {
++		ANDROID_INFO(d,
++		             "gyro %u Hz, sample age avg %" PRId64 " us max %" PRId64 " us; poses %u, horizon min %" PRId64
++		             " avg %" PRId64 " max %" PRId64 " us, limited %u",
++		             d->stats.gyro_count, d->stats.gyro_age_sum_ns / d->stats.gyro_count / 1000,
++		             d->stats.gyro_age_max_ns / 1000, d->stats.pose_count, d->stats.horizon_min_ns / 1000,
++		             d->stats.horizon_sum_ns / d->stats.pose_count / 1000, d->stats.horizon_max_ns / 1000,
++		             d->stats.limited_count);
++	}
++
++	U_ZERO(&d->stats);
++	d->stats.window_start_ns = now_ns;
++	d->stats.horizon_min_ns = INT64_MAX;
++	d->stats.horizon_max_ns = INT64_MIN;
++}
++
  // Callback for the Android sensor event queue
  static int
  android_sensor_callback(ASensorEvent *event, struct android_device *d)
-@@ -176,8 +225,21 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+@@ -176,8 +254,25 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
  
  		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
  
@@ -79,17 +108,21 @@ index e35fb385..ef34a81f 100644
 +		// The gyro reports in body space, relations carry base space velocity.
 +		math_quat_rotate_derivative(&d->fusion.rot, &gyro, &rel.angular_velocity);
 +
++		int64_t sample_ns = android_sensor_time_to_monotonic_ns(event->timestamp);
++		int64_t now_ns = os_monotonic_get_ns();
++		d->stats.gyro_count++;
++		d->stats.gyro_age_sum_ns += now_ns - sample_ns;
++		d->stats.gyro_age_max_ns = MAX(d->stats.gyro_age_max_ns, now_ns - sample_ns);
++		android_stats_report_locked(d, now_ns);
++
  		// Now done.
  		os_mutex_unlock(&d->lock);
 +
-+		int64_t sample_ns = android_sensor_time_to_monotonic_ns(event->timestamp);
 +		m_relation_history_push(d->relation_hist, &rel, sample_ns);
-+
-+		ANDROID_TRACE(d, "gyro sample age %" PRId64 " us", (os_monotonic_get_ns() - sample_ns) / 1000);
  		break;
  	}
  	default: ANDROID_TRACE(d, "Unhandled event type %d", event->type);
-@@ -302,6 +364,8 @@ android_device_destroy(struct xrt_device *xdev)
+@@ -302,6 +397,8 @@ android_device_destroy(struct xrt_device *xdev)
  	// Destroy the fusion.
  	m_imu_3dof_close(&android->fusion);
  
@@ -98,7 +131,7 @@ index e35fb385..ef34a81f 100644
  	// Remove the variable tracking.
  	u_var_remove_root(android);
  
-@@ -314,15 +378,22 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+@@ -314,15 +411,28 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
                                  int64_t at_timestamp_ns,
                                  struct xrt_space_relation *out_relation)
  {
@@ -108,15 +141,19 @@ index e35fb385..ef34a81f 100644
  
  	struct xrt_space_relation new_relation = XRT_SPACE_RELATION_ZERO;
  
--	os_mutex_lock(&d->lock);
--	new_relation.pose.orientation = d->fusion.rot;
--	os_mutex_unlock(&d->lock);
 +	int64_t now_ns = os_monotonic_get_ns();
 +	int64_t query_ns = android_limit_prediction_ns(d, now_ns, at_timestamp_ns);
 +	enum m_relation_history_result res = m_relation_history_get(d->relation_hist, query_ns, &new_relation);
 +
-+	ANDROID_TRACE(d, "pose requested %+" PRId64 " us from now, sampled at %+" PRId64 " us, history result %d",
-+	              (at_timestamp_ns - now_ns) / 1000, (query_ns - now_ns) / 1000, (int)res);
+ 	os_mutex_lock(&d->lock);
+-	new_relation.pose.orientation = d->fusion.rot;
++	int64_t horizon_ns = at_timestamp_ns - now_ns;
++	d->stats.pose_count++;
++	d->stats.horizon_sum_ns += horizon_ns;
++	d->stats.horizon_min_ns = MIN(d->stats.horizon_min_ns, horizon_ns);
++	d->stats.horizon_max_ns = MAX(d->stats.horizon_max_ns, horizon_ns);
++	d->stats.limited_count += query_ns != at_timestamp_ns;
+ 	os_mutex_unlock(&d->lock);
 +	if (res == M_RELATION_HISTORY_RESULT_INVALID) {
 +		// No sensor events yet.
 +		os_mutex_lock(&d->lock);
@@ -126,7 +163,7 @@ index e35fb385..ef34a81f 100644
  
  	//! @todo assuming that orientation is actually currently tracked.
  	new_relation.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-@@ -370,6 +441,7 @@ android_device_create(void)
+@@ -370,6 +480,7 @@ android_device_create(void)
  	d->log_level = debug_get_log_option_android_log();
  
  	m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
@@ -135,7 +172,7 @@ index e35fb385..ef34a81f 100644
  	int ret = os_mutex_init(&d->lock);
  	if (ret != 0) {
 diff --git a/src/xrt/drivers/android/android_sensors.h b/src/xrt/drivers/android/android_sensors.h
-index 0d06fdb6..b1706404 100644
+index 0d06fdb6..19f8f56a 100644
 --- a/src/xrt/drivers/android/android_sensors.h
 +++ b/src/xrt/drivers/android/android_sensors.h
 @@ -14,6 +14,7 @@
@@ -146,8 +183,30 @@ index 0d06fdb6..b1706404 100644
  
  #include "xrt/xrt_device.h"
  
-@@ -45,6 +46,9 @@ struct android_device
+@@ -38,13 +39,30 @@ struct android_device
+ 
+ 	struct
+ 	{
+-		//! Lock for last_accel and fusion.
++		//! Lock for last_accel, fusion and stats.
+ 		struct os_mutex lock;
+ 		struct m_imu_3dof fusion;
+ 		//! Latest accelerometer sample, fed to the fusion on each gyro update.
  		struct xrt_vec3 last_accel;
++
++		//! Timing of the current one second window, see android_stats_report_locked.
++		struct
++		{
++			int64_t window_start_ns;
++			uint32_t gyro_count;
++			int64_t gyro_age_sum_ns;
++			int64_t gyro_age_max_ns;
++			uint32_t pose_count;
++			uint32_t limited_count;
++			int64_t horizon_sum_ns;
++			int64_t horizon_min_ns;
++			int64_t horizon_max_ns;
++		} stats;
  	};
  
 +	//! Fused orientations in the monotonic clock domain, has its own locking.
