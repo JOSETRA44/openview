@@ -1,0 +1,11 @@
+/build/
+/build-*/
+/out/
+.gradle/
+local.properties
+*.apk
+.cxx/
+.idea/
+.vs/
+.vscode/
+CMakeUserPresets.json

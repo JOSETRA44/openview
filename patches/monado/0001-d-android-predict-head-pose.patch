@@ -1,0 +1,144 @@
+diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
+index e35fb385..8cd3d52c 100644
+--- a/src/xrt/drivers/android/android_sensors.c
++++ b/src/xrt/drivers/android/android_sensors.c
+@@ -27,8 +27,12 @@
+ #include "android/android_content.h"
+ #include "android/android_custom_surface.h"
+ 
++#include "os/os_time.h"
++
+ #include <xrt/xrt_config_android.h>
+ 
++#include <time.h>
++
+ // Workaround to avoid the inclusion of "android_native_app_glue.h.
+ #ifndef LOOPER_ID_USER
+ #define LOOPER_ID_USER 3
+@@ -143,6 +147,44 @@ load_cardboard_distortion(struct android_device *d,
+ 	return true;
+ }
+ 
++/*!
++ * Sensor events are stamped on the CLOCK_BOOTTIME base while the rest of
++ * Monado, including the times poses are requested for, uses CLOCK_MONOTONIC.
++ * The two only drift apart while the device is suspended, so the offset is
++ * resampled on every call instead of being cached.
++ */
++static int64_t
++android_sensor_time_to_monotonic_ns(int64_t sensor_timestamp_ns)
++{
++	struct timespec boot;
++	struct timespec mono;
++	if (clock_gettime(CLOCK_BOOTTIME, &boot) != 0 || clock_gettime(CLOCK_MONOTONIC, &mono) != 0) {
++		return sensor_timestamp_ns;
++	}
++
++	int64_t offset_ns = (int64_t)(boot.tv_sec - mono.tv_sec) * 1000000000LL + (boot.tv_nsec - mono.tv_nsec);
++	return sensor_timestamp_ns - offset_ns;
++}
++
++/*!
++ * Decides which time the head pose is actually sampled at, given when the
++ * caller wants it. Gyro extrapolation assumes constant angular velocity, so
++ * its error grows with the horizon, and callers can ask for arbitrary times.
++ *
++ * @param d               For device properties such as the frame interval.
++ * @param now_ns          Current monotonic time.
++ * @param at_timestamp_ns Time the pose was requested for.
++ * @return Time to query the relation history with.
++ */
++static int64_t
++android_limit_prediction_ns(const struct android_device *d, int64_t now_ns, int64_t at_timestamp_ns)
++{
++	// TODO(policy): bound how far past now_ns we extrapolate. Unbounded for now.
++	(void)d;
++	(void)now_ns;
++	return at_timestamp_ns;
++}
++
+ // Callback for the Android sensor event queue
+ static int
+ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+@@ -176,8 +218,18 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+ 
+ 		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
+ 
++		struct xrt_space_relation rel = XRT_SPACE_RELATION_ZERO;
++		rel.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
++		                                                     XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
++		                                                     XRT_SPACE_RELATION_ANGULAR_VELOCITY_VALID_BIT);
++		rel.pose.orientation = d->fusion.rot;
++		// The gyro reports in body space, relations carry base space velocity.
++		math_quat_rotate_derivative(&d->fusion.rot, &gyro, &rel.angular_velocity);
++
+ 		// Now done.
+ 		os_mutex_unlock(&d->lock);
++
++		m_relation_history_push(d->relation_hist, &rel, android_sensor_time_to_monotonic_ns(event->timestamp));
+ 		break;
+ 	}
+ 	default: ANDROID_TRACE(d, "Unhandled event type %d", event->type);
+@@ -302,6 +354,8 @@ android_device_destroy(struct xrt_device *xdev)
+ 	// Destroy the fusion.
+ 	m_imu_3dof_close(&android->fusion);
+ 
++	m_relation_history_destroy(&android->relation_hist);
++
+ 	// Remove the variable tracking.
+ 	u_var_remove_root(android);
+ 
+@@ -314,15 +368,18 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+                                 int64_t at_timestamp_ns,
+                                 struct xrt_space_relation *out_relation)
+ {
+-	(void)at_timestamp_ns;
+-
+ 	struct android_device *d = android_device(xdev);
+ 
+ 	struct xrt_space_relation new_relation = XRT_SPACE_RELATION_ZERO;
+ 
+-	os_mutex_lock(&d->lock);
+-	new_relation.pose.orientation = d->fusion.rot;
+-	os_mutex_unlock(&d->lock);
++	int64_t query_ns = android_limit_prediction_ns(d, os_monotonic_get_ns(), at_timestamp_ns);
++	enum m_relation_history_result res = m_relation_history_get(d->relation_hist, query_ns, &new_relation);
++	if (res == M_RELATION_HISTORY_RESULT_INVALID) {
++		// No sensor events yet.
++		os_mutex_lock(&d->lock);
++		new_relation.pose.orientation = d->fusion.rot;
++		os_mutex_unlock(&d->lock);
++	}
+ 
+ 	//! @todo assuming that orientation is actually currently tracked.
+ 	new_relation.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
+@@ -370,6 +427,7 @@ android_device_create(void)
+ 	d->log_level = debug_get_log_option_android_log();
+ 
+ 	m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);
++	m_relation_history_create(&d->relation_hist);
+ 
+ 	int ret = os_mutex_init(&d->lock);
+ 	if (ret != 0) {
+diff --git a/src/xrt/drivers/android/android_sensors.h b/src/xrt/drivers/android/android_sensors.h
+index 0d06fdb6..b1706404 100644
+--- a/src/xrt/drivers/android/android_sensors.h
++++ b/src/xrt/drivers/android/android_sensors.h
+@@ -14,6 +14,7 @@
+ #include "math/m_api.h"
+ #include "math/m_imu_pre.h"
+ #include "math/m_imu_3dof.h"
++#include "math/m_relation_history.h"
+ 
+ #include "xrt/xrt_device.h"
+ 
+@@ -45,6 +46,9 @@ struct android_device
+ 		struct xrt_vec3 last_accel;
+ 	};
+ 
++	//! Fused orientations in the monotonic clock domain, has its own locking.
++	struct m_relation_history *relation_hist;
++
+ 	enum u_logging_level log_level;
+ };
+ 
