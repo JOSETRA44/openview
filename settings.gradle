@@ -39,3 +39,7 @@ project(':src:xrt:targets:android_common').projectDir = new File(monado, 'src/xr
 
 include ':app'
 project(':app').projectDir = new File(rootDir, 'android/app')
+
+// Standalone tool, shares nothing with the runtime but the build setup.
+include ':recorder'
+project(':recorder').projectDir = new File(rootDir, 'tools/sensor-recorder/app')

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">OpenView Recorder</string>
+    <string name="button_start">Record</string>
+    <string name="button_stop">Stop</string>
+    <string name="status_idle">Records the back camera and the IMU with their raw timestamps.</string>
+    <string name="status_recording">%1$.1f s\nframes %2$d\ngyro %3$d\naccel %4$d</string>
+    <string name="status_saved">Saved: %1$d frames, %2$d gyro, %3$d accel\n%4$s</string>
+    <string name="status_no_camera">No back camera found.</string>
+    <string name="status_no_camera_permission">Camera permission is needed to record.</string>
+</resources>

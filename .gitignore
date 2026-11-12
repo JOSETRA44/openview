@@ -10,3 +10,4 @@ local.properties
 .vscode/
 CMakeUserPresets.json
 android/app/build/
+tools/sensor-recorder/app/build/

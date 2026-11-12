@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="button_start">Grabar</string>
+    <string name="button_stop">Detener</string>
+    <string name="status_idle">Graba la cámara trasera y el IMU con sus timestamps originales.</string>
+    <string name="status_recording">%1$.1f s\nframes %2$d\ngiroscopio %3$d\nacelerómetro %4$d</string>
+    <string name="status_saved">Guardado: %1$d frames, %2$d giroscopio, %3$d acelerómetro\n%4$s</string>
+    <string name="status_no_camera">No se encontró cámara trasera.</string>
+    <string name="status_no_camera_permission">Hace falta el permiso de cámara para grabar.</string>
+</resources>
