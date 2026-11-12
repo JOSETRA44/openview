@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
-index e35fb385..8cd3d52c 100644
+index e35fb385..ef34a81f 100644
 --- a/src/xrt/drivers/android/android_sensors.c
 +++ b/src/xrt/drivers/android/android_sensors.c
 @@ -27,8 +27,12 @@
@@ -15,7 +15,7 @@ index e35fb385..8cd3d52c 100644
  // Workaround to avoid the inclusion of "android_native_app_glue.h.
  #ifndef LOOPER_ID_USER
  #define LOOPER_ID_USER 3
-@@ -143,6 +147,44 @@ load_cardboard_distortion(struct android_device *d,
+@@ -143,6 +147,51 @@ load_cardboard_distortion(struct android_device *d,
  	return true;
  }
  
@@ -51,16 +51,23 @@ index e35fb385..8cd3d52c 100644
 +static int64_t
 +android_limit_prediction_ns(const struct android_device *d, int64_t now_ns, int64_t at_timestamp_ns)
 +{
-+	// TODO(policy): bound how far past now_ns we extrapolate. Unbounded for now.
-+	(void)d;
-+	(void)now_ns;
-+	return at_timestamp_ns;
++	/*
++	 * Three frames covers app render, composition and scanout, which is
++	 * what frame pacing asks for. The error of extrapolating with constant
++	 * angular velocity grows with the square of the horizon, so anything
++	 * further out (a paused app, a bogus timestamp) is not worth following.
++	 * The fixed bounds keep the limit sane across 60 to 144 Hz panels.
++	 */
++	int64_t horizon_ns = 3 * (int64_t)d->base.hmd->screens[0].nominal_frame_interval_ns;
++	horizon_ns = CLAMP(horizon_ns, 30 * U_TIME_1MS_IN_NS, 60 * U_TIME_1MS_IN_NS);
++
++	return MIN(at_timestamp_ns, now_ns + horizon_ns);
 +}
 +
  // Callback for the Android sensor event queue
  static int
  android_sensor_callback(ASensorEvent *event, struct android_device *d)
-@@ -176,8 +218,18 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+@@ -176,8 +225,21 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
  
  		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
  
@@ -75,11 +82,14 @@ index e35fb385..8cd3d52c 100644
  		// Now done.
  		os_mutex_unlock(&d->lock);
 +
-+		m_relation_history_push(d->relation_hist, &rel, android_sensor_time_to_monotonic_ns(event->timestamp));
++		int64_t sample_ns = android_sensor_time_to_monotonic_ns(event->timestamp);
++		m_relation_history_push(d->relation_hist, &rel, sample_ns);
++
++		ANDROID_TRACE(d, "gyro sample age %" PRId64 " us", (os_monotonic_get_ns() - sample_ns) / 1000);
  		break;
  	}
  	default: ANDROID_TRACE(d, "Unhandled event type %d", event->type);
-@@ -302,6 +354,8 @@ android_device_destroy(struct xrt_device *xdev)
+@@ -302,6 +364,8 @@ android_device_destroy(struct xrt_device *xdev)
  	// Destroy the fusion.
  	m_imu_3dof_close(&android->fusion);
  
@@ -88,7 +98,7 @@ index e35fb385..8cd3d52c 100644
  	// Remove the variable tracking.
  	u_var_remove_root(android);
  
-@@ -314,15 +368,18 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+@@ -314,15 +378,22 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
                                  int64_t at_timestamp_ns,
                                  struct xrt_space_relation *out_relation)
  {
@@ -101,8 +111,12 @@ index e35fb385..8cd3d52c 100644
 -	os_mutex_lock(&d->lock);
 -	new_relation.pose.orientation = d->fusion.rot;
 -	os_mutex_unlock(&d->lock);
-+	int64_t query_ns = android_limit_prediction_ns(d, os_monotonic_get_ns(), at_timestamp_ns);
++	int64_t now_ns = os_monotonic_get_ns();
++	int64_t query_ns = android_limit_prediction_ns(d, now_ns, at_timestamp_ns);
 +	enum m_relation_history_result res = m_relation_history_get(d->relation_hist, query_ns, &new_relation);
++
++	ANDROID_TRACE(d, "pose requested %+" PRId64 " us from now, sampled at %+" PRId64 " us, history result %d",
++	              (at_timestamp_ns - now_ns) / 1000, (query_ns - now_ns) / 1000, (int)res);
 +	if (res == M_RELATION_HISTORY_RESULT_INVALID) {
 +		// No sensor events yet.
 +		os_mutex_lock(&d->lock);
@@ -112,7 +126,7 @@ index e35fb385..8cd3d52c 100644
  
  	//! @todo assuming that orientation is actually currently tracked.
  	new_relation.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-@@ -370,6 +427,7 @@ android_device_create(void)
+@@ -370,6 +441,7 @@ android_device_create(void)
  	d->log_level = debug_get_log_option_android_log();
  
  	m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);

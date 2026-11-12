@@ -12,4 +12,4 @@ un fork alojado. Cuando un parche se acepta upstream y se sube el commit fijado,
 
 | Parche | Qué hace | Upstream |
 |---|---|---|
-| `0001-d-android-predict-head-pose` | El driver Android guarda las orientaciones en un `m_relation_history` y responde a `get_tracked_pose` para el instante pedido, en vez de ignorarlo. Convierte los timestamps de sensor de `CLOCK_BOOTTIME` a `CLOCK_MONOTONIC` | Sin enviar; falta probar en dispositivo y definir el límite de predicción |
+| `0001-d-android-predict-head-pose` | El driver Android guarda las orientaciones en un `m_relation_history` y responde a `get_tracked_pose` para el instante pedido, en vez de ignorarlo. Convierte los timestamps de sensor de `CLOCK_BOOTTIME` a `CLOCK_MONOTONIC` | Sin enviar; en validación en dispositivo. Límite de predicción: 3 intervalos de frame, acotado a 30–60 ms |
