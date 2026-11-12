@@ -45,6 +45,8 @@ monado_set_options(
 		XRT_BUILD_DRIVER_QWERTY
 		XRT_BUILD_DRIVER_REMOTE
 		BUILD_TESTING
+		# Monado's own tests link the mock compositor.
+		XRT_MODULE_COMPOSITOR_MOCK
 	KEEP_SET OPENXR_FEATURES DEPENDENCIES
 	)
 
