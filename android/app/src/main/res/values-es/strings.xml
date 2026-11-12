@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="setup_channel_name">Configuración</string>
+    <string name="setup_overlay_title">OpenView necesita un permiso más</string>
+    <string name="setup_overlay_text">Permite que OpenView se muestre sobre otras apps. Sin ese permiso el teléfono pausa OpenView a los pocos segundos de iniciar una sesión y el seguimiento de cabeza se detiene. Toca para abrir el ajuste.</string>
+</resources>

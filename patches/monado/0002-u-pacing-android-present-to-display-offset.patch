@@ -1,0 +1,55 @@
+diff --git a/src/xrt/auxiliary/util/u_pacing_compositor_fake.c b/src/xrt/auxiliary/util/u_pacing_compositor_fake.c
+index f7589a3e..4fa3049c 100644
+--- a/src/xrt/auxiliary/util/u_pacing_compositor_fake.c
++++ b/src/xrt/auxiliary/util/u_pacing_compositor_fake.c
+@@ -7,6 +7,8 @@
+  * @ingroup aux_util
+  */
+ 
++#include "xrt/xrt_config_os.h"
++
+ #include "os/os_time.h"
+ 
+ #include "util/u_var.h"
+@@ -38,7 +40,16 @@ DEBUG_GET_ONCE_LOG_OPTION(log_level_fake, "U_PACING_COMPOSITOR_FAKE_LOG", U_LOGG
+  *
+  */
+ 
+-DEBUG_GET_ONCE_FLOAT_OPTION(present_to_display_offset_ms, "U_PACING_COMP_PRESENT_TO_DISPLAY_OFFSET_MS", 4.0f)
++#ifdef XRT_OS_ANDROID
++// Negative means derive it from the frame period, see u_pc_fake_create.
++#define DEFAULT_PRESENT_TO_DISPLAY_OFFSET_MS -1.0f
++#else
++#define DEFAULT_PRESENT_TO_DISPLAY_OFFSET_MS 4.0f
++#endif
++
++DEBUG_GET_ONCE_FLOAT_OPTION(present_to_display_offset_ms,
++                            "U_PACING_COMP_PRESENT_TO_DISPLAY_OFFSET_MS",
++                            DEFAULT_PRESENT_TO_DISPLAY_OFFSET_MS)
+ DEBUG_GET_ONCE_FLOAT_OPTION(min_comp_time_ms, "U_PACING_COMP_MIN_TIME_MS", 3.0f)
+ DEBUG_GET_ONCE_FLOAT_OPTION(comp_time_fraction_percent, "U_PACING_COMP_TIME_FRACTION_PERCENT", 20.0f)
+ DEBUG_GET_ONCE_BOOL_OPTION(live_stats, "U_PACING_LIVE_STATS", false)
+@@ -478,13 +489,22 @@ u_pc_fake_create(int64_t estimated_frame_period_ns, int64_t now_ns, struct u_pac
+ 
+ 	// An arbitrary guess, that happens to be based on Index.
+ 	float present_to_display_offset_ms = debug_get_float_option_present_to_display_offset_ms();
++	if (present_to_display_offset_ms < 0.0f) {
++		/*
++		 * A buffer handed to SurfaceFlinger is latched on the next vsync
++		 * and scanned out on the one after, so about two frame periods
++		 * pass between present and photons. Measured on a MediaTek G99
++		 * phone at 60 Hz: 27 to 44 ms, median 36 ms.
++		 */
++		present_to_display_offset_ms = (float)time_ns_to_ms_f(2 * estimated_frame_period_ns);
++	}
+ 
+ 	// Present to display offset, aka vblank to pixel turning into photons.
+ 	ft->present_to_display_offset_ms = (struct u_var_draggable_f32){
+ 	    .val = present_to_display_offset_ms,
+ 	    .min = 1.0, // A lot of things assumes this is not negative.
+ 	    .step = 0.1,
+-	    .max = +40.0,
++	    .max = +100.0,
+ 	};
+ 
+ 	// Set comp_time_ms to a percentage of the frame time.

@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
-index e35fb385..0d69e1cd 100644
+index e35fb385..e2f99376 100644
 --- a/src/xrt/drivers/android/android_sensors.c
 +++ b/src/xrt/drivers/android/android_sensors.c
 @@ -27,8 +27,12 @@
@@ -15,7 +15,7 @@ index e35fb385..0d69e1cd 100644
  // Workaround to avoid the inclusion of "android_native_app_glue.h.
  #ifndef LOOPER_ID_USER
  #define LOOPER_ID_USER 3
-@@ -143,6 +147,80 @@ load_cardboard_distortion(struct android_device *d,
+@@ -143,6 +147,82 @@ load_cardboard_distortion(struct android_device *d,
  	return true;
  }
  
@@ -52,14 +52,16 @@ index e35fb385..0d69e1cd 100644
 +android_limit_prediction_ns(const struct android_device *d, int64_t now_ns, int64_t at_timestamp_ns)
 +{
 +	/*
-+	 * Three frames covers app render, composition and scanout, which is
-+	 * what frame pacing asks for. The error of extrapolating with constant
-+	 * angular velocity grows with the square of the horizon, so anything
-+	 * further out (a paused app, a bogus timestamp) is not worth following.
-+	 * The fixed bounds keep the limit sane across 60 to 144 Hz panels.
++	 * A frame takes about two periods to cross SurfaceFlinger, on top of
++	 * app render and composition, so apps legitimately ask for poses up to
++	 * four periods ahead (measured: 36 to 64 ms at 60 Hz). Five gives some
++	 * margin. The error of extrapolating with constant angular velocity
++	 * grows with the square of the horizon, so anything further out (a
++	 * paused app, a bogus timestamp) is not worth following. The fixed
++	 * bounds keep the limit sane across 60 to 144 Hz panels.
 +	 */
-+	int64_t horizon_ns = 3 * (int64_t)d->base.hmd->screens[0].nominal_frame_interval_ns;
-+	horizon_ns = CLAMP(horizon_ns, 30 * U_TIME_1MS_IN_NS, 60 * U_TIME_1MS_IN_NS);
++	int64_t horizon_ns = 5 * (int64_t)d->base.hmd->screens[0].nominal_frame_interval_ns;
++	horizon_ns = CLAMP(horizon_ns, 40 * U_TIME_1MS_IN_NS, 100 * U_TIME_1MS_IN_NS);
 +
 +	return MIN(at_timestamp_ns, now_ns + horizon_ns);
 +}
@@ -96,7 +98,7 @@ index e35fb385..0d69e1cd 100644
  // Callback for the Android sensor event queue
  static int
  android_sensor_callback(ASensorEvent *event, struct android_device *d)
-@@ -176,8 +254,25 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+@@ -176,8 +256,25 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
  
  		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
  
@@ -122,7 +124,7 @@ index e35fb385..0d69e1cd 100644
  		break;
  	}
  	default: ANDROID_TRACE(d, "Unhandled event type %d", event->type);
-@@ -302,6 +397,8 @@ android_device_destroy(struct xrt_device *xdev)
+@@ -302,6 +399,8 @@ android_device_destroy(struct xrt_device *xdev)
  	// Destroy the fusion.
  	m_imu_3dof_close(&android->fusion);
  
@@ -131,7 +133,7 @@ index e35fb385..0d69e1cd 100644
  	// Remove the variable tracking.
  	u_var_remove_root(android);
  
-@@ -314,15 +411,28 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+@@ -314,15 +413,28 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
                                  int64_t at_timestamp_ns,
                                  struct xrt_space_relation *out_relation)
  {
@@ -163,7 +165,7 @@ index e35fb385..0d69e1cd 100644
  
  	//! @todo assuming that orientation is actually currently tracked.
  	new_relation.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-@@ -370,6 +480,7 @@ android_device_create(void)
+@@ -370,6 +482,7 @@ android_device_create(void)
  	d->log_level = debug_get_log_option_android_log();
  
  	m_imu_3dof_init(&d->fusion, M_IMU_3DOF_USE_GRAVITY_DUR_20MS);

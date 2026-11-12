@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">OpenView</string>
-    <string name="service_name">OpenView OpenXR</string>
+    <string name="app_name" translatable="false">OpenView</string>
+    <string name="service_name" translatable="false">OpenView OpenXR</string>
+    <string name="setup_channel_name">Setup</string>
+    <string name="setup_overlay_title">OpenView needs one more permission</string>
+    <string name="setup_overlay_text">Allow OpenView to display over other apps. Without it your phone pauses OpenView a few seconds into a session and head tracking stops. Tap to open the setting.</string>
 </resources>
