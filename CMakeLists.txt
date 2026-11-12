@@ -32,6 +32,8 @@ monado_set_options(
 		XRT_MODULE_IPC
 		XRT_MODULE_OPENXR_STATE_TRACKER
 		XRT_BUILD_DRIVER_SIMULATED
+		# drv_remote links aux_vive without declaring the dependency upstream.
+		XRT_MODULE_AUX_VIVE
 	KEEP
 		# Auto-detected per platform; Monado's own DEPENDS rules gate them.
 		XRT_FEATURE_SSE2
