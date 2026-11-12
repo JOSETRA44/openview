@@ -10,8 +10,9 @@ Actualizado: 2026-11-11. La verificación se hace en GitHub Actions (`.github/wo
 | Tests de Monado (`ctest`) con nuestra selección de módulos | Verificado en CI |
 | Cliente OpenXR → runtime → IPC → servicio | Verificado en CI: `openxr_runtime_list` crea la instancia (`xrCreateInstance`), obtiene el sistema (`xrGetSystem`) y el servicio registra `Client 1 connected`. Vulkan por software (lavapipe) sobre Xvfb |
 | Renderizado de frames (`hello_xr`) | No ejecutado |
-| El parche 0001 compila | **No verificado**: el driver Android no se compila en el build Linux |
-| APK Android | En curso en CI (job `android`) |
+| El parche 0001 compila | Verificado en CI para arm64-v8a, armeabi-v7a, x86 y x86_64: `monado-service` de Android enlaza `drv_android` y el build termina sin errores. Su comportamiento en ejecución **no** está probado |
+| APK Android (Monado `outOfProcess` debug + parches) | Verificado en CI; se publica como artefacto `monado-outOfProcess-debug-apk` (~80 MB) |
+| Módulo Gradle propio de OpenView sobre `android_common` | No escrito: el APK actual es el de Monado, con su nombre e identidad |
 | `hello_xr` en teléfono, frame time, térmica, efecto de la predicción | No ejecutado: requiere dispositivo |
 
 ## Hallazgos del primer build
