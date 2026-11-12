@@ -35,3 +35,14 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      # End to end: OpenXR loader -> libopenxr_openview -> IPC -> openview-service,
+      # on a software Vulkan driver and a virtual X display.
+      - name: Smoke test
+        run: |
+          sudo apt-get install -y --no-install-recommends xvfb mesa-vulkan-drivers libopenxr-utils
+          export XDG_RUNTIME_DIR="$(mktemp -d)"
+          sleep infinity | xvfb-run -a build/runtime/openview-service > service.log 2>&1 &
+          sleep 8
+          XR_RUNTIME_JSON="$PWD/build/openxr_openview-dev.json" openxr_runtime_list || { cat service.log; exit 1; }
+          tail -n 30 service.log
