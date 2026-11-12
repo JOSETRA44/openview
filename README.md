@@ -34,7 +34,7 @@ cmake --build build
 ```
 
 Dependencias en Debian/Ubuntu: `build-essential cmake ninja-build pkg-config libeigen3-dev
-libvulkan-dev glslang-tools libsdl2-dev libx11-xcb-dev libxcb-randr0-dev libxrandr-dev libgl-dev
+libvulkan-dev glslang-tools libsdl2-dev libx11-xcb-dev libxcb-randr0-dev libxrandr-dev libgl-dev libopengl-dev
 libegl-dev libudev-dev libbsd-dev libcjson-dev`.
 
 Ejecutar: `build/runtime/openview-service` y, en otra terminal, cualquier app OpenXR con

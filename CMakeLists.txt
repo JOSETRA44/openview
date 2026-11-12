@@ -48,10 +48,5 @@ monado_set_options(
 	KEEP_SET OPENXR_FEATURES DEPENDENCIES
 	)
 
-# Monado's static libraries link imported targets (e.g. OpenGL::GLX) that
-# find_package() creates in Monado's directory scope. Our targets link those
-# libraries from outside that scope, so the imported targets must be global.
-set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL ON)
-
 add_subdirectory(${MONADO_ROOT} monado)
 add_subdirectory(runtime)
