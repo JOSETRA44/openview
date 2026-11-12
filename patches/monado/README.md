@@ -4,7 +4,7 @@ Cambios que OpenView necesita y que aún no están upstream. Se aplican sobre el
 del submódulo:
 
 ```sh
-git -C third_party/monado apply ../../patches/monado/*.patch
+git -C third_party/monado apply "$PWD"/patches/monado/*.patch
 ```
 
 Son archivos y no una rama del submódulo porque así el repo es reproducible sin depender de

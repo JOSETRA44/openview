@@ -25,7 +25,7 @@ jobs:
             libudev-dev libbsd-dev libcjson-dev
 
       - name: Apply Monado patches
-        run: git -C third_party/monado apply ../../patches/monado/*.patch
+        run: git -C third_party/monado apply "$PWD"/patches/monado/*.patch
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=ON

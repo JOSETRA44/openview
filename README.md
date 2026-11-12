@@ -28,7 +28,7 @@ ver [docs/findings/estado-de-verificacion.md](docs/findings/estado-de-verificaci
 
 ```sh
 git submodule update --init
-git -C third_party/monado apply ../../patches/monado/*.patch
+git -C third_party/monado apply "$PWD"/patches/monado/*.patch
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build
 ```
