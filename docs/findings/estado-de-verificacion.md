@@ -12,12 +12,15 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Renderizado de frames (`hello_xr`) | No ejecutado |
 | El parche 0001 compila | Verificado en CI para arm64-v8a, armeabi-v7a, x86 y x86_64: `monado-service` de Android enlaza `drv_android` y el build termina sin errores. Su comportamiento en ejecución **no** está probado |
 | APK propio de OpenView (`dev.openview.runtime`, arm64-v8a y x86_64) | Verificado en CI; artefacto `openview-debug-apk`, firmado con una clave de depuración fija |
-| OpenView sirve a `hello_xr` en un teléfono | Verificado en un Infinix X6885 durante los primeros segundos; después el fabricante congela el proceso. Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
-| Predicción de pose: conversión de reloj y límite | Verificado en ese dispositivo con las estadísticas del driver |
-| Efecto visual de la predicción, error angular | No medido |
-| Cadencia real de frames (SurfaceFlinger) | No medido |
+| OpenView sirve a `hello_xr` en un teléfono de forma continua | Verificado en un Infinix X6885 (corridas de 60 y 90 s), con el permiso de superposición concedido. Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
+| Aviso cuando falta el permiso de superposición | Verificado en ese dispositivo |
+| Predicción de pose: conversión de reloj y límite | Verificado en ese dispositivo: 0 de 6060 consultas recortadas |
+| Modelo de latencia de pantalla (parche 0002) | Verificado en ese dispositivo a 60 Hz; sin probar a 90/120/144 Hz |
+| Cadencia real de frames | Medida: 59 fps, 6 % de frames tardíos. Sin corregir, ver [ADR-0002](../adr/0002-temporizacion-de-pantalla-en-android.md) |
+| Efecto visual de la predicción, error angular, latencia percibida | No medido |
 | Térmica con una aplicación exigente | No medido; solo `hello_xr` |
-| Otros teléfonos | Ninguno probado |
+| Otros teléfonos y fabricantes | Ninguno probado |
+| Una app que no sea `hello_xr` (Godot, StereoKit) | No probado |
 
 ## Hallazgos del primer build
 
