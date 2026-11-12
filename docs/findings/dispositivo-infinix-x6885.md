@@ -149,8 +149,35 @@ Consecuencias para el seguimiento 6DoF:
 - Los intrínsecos hay que calibrarlos por dispositivo.
 - La regularidad del IMU y la base de tiempo compartida son buenas noticias.
 
-**No medido**: el desfase cámara–IMU. El estimador (`analyze.py`) necesita una captura con
-giros; con el teléfono quieto devuelve correlación ~0 y lo reporta como indeterminado.
+### Capturas en movimiento
+
+**Verificado**, tres capturas a mano de 17–23 s con giros de ~1 rad/s eficaz (hasta 4.6 rad/s):
+30.00 fps y 406 Hz sin un solo salto en ninguna, mismo rolling shutter.
+
+| Captura | Brillo medio | Exposición | Velocidad de imagen mediana | Correlación con el giroscopio |
+|---|---|---|---|---|
+| 144821 | 57 | 30 ms | 42 px/s | 0.17 |
+| 145137 | 56 | 20–30 ms | 42 px/s | 0.21 |
+| 145427 | 129 | 10–30 ms | 90 px/s | 0.68 |
+
+A 1 rad/s la imagen debería desplazarse unos 250 px/s a esta resolución. En las dos capturas
+oscuras la correlación de fase entre frames mide una sexta parte: con 30 ms de exposición el
+desenfoque de movimiento deja la imagen sin estructura que seguir.
+
+**Límite**: con la exposición automática de este teléfono en interior, los frames tomados
+durante un giro normal de cabeza no sirven para seguimiento visual. La grabadora ahora fija
+la exposición en 5 ms como máximo.
+
+### Desfase cámara–IMU
+
+**Verificado en una sola captura** (145427, correlación 0.68): el giroscopio va 25 ms por
+delante del timestamp de la cámara. El timestamp marca el inicio de la exposición de la
+primera fila; el contenido de la imagen corresponde en promedio a media exposición y media
+lectura después, 24.7 ms con los valores de esa captura. El residuo es 0.3 ms.
+
+**Hipótesis**: los relojes de cámara e IMU de este dispositivo no tienen desfase propio y
+todo el retardo aparente lo explican exposición y rolling shutter. Un dato con correlación
+moderada no lo establece; hay que repetirlo con exposición fija.
 
 ## Térmica
 
