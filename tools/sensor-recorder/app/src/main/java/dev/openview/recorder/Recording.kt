@@ -63,6 +63,10 @@ class Recording(private val context: Context, private val dir: File, private val
     private var camera: CameraDevice? = null
     private var session: CameraCaptureSession? = null
     private var reader: ImageReader? = null
+    private var requestBuilder: CaptureRequest.Builder? = null
+    private var autoExposureResults = 0
+    private var exposureLocked = false
+    private lateinit var captureCallback: CameraCaptureSession.CaptureCallback
 
     private val sensorListener =
         object : SensorEventListener {
@@ -144,7 +148,7 @@ class Recording(private val context: Context, private val dir: File, private val
             cameraHandler,
         )
 
-        val captureCallback =
+        captureCallback =
             object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureCompleted(
                     session: CameraCaptureSession,
@@ -152,6 +156,7 @@ class Recording(private val context: Context, private val dir: File, private val
                     result: TotalCaptureResult,
                 ) {
                     val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                    lockShortExposure(result)
                     val fields =
                         listOf(
                                 result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
@@ -195,6 +200,8 @@ class Recording(private val context: Context, private val dir: File, private val
                             set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
                         }
 
+                    requestBuilder = request
+
                     val config =
                         SessionConfiguration(
                             SessionConfiguration.SESSION_REGULAR,
@@ -225,6 +232,37 @@ class Recording(private val context: Context, private val dir: File, private val
         )
     }
 
+    /*
+     * Auto exposure indoors settles around 30 ms, and at head-like rotation
+     * rates that smears the image beyond what any tracker can follow. So once
+     * auto exposure has found the right brightness, the same brightness is
+     * rebuilt from a short exposure and more gain: noisier, but sharp.
+     */
+    private fun lockShortExposure(result: TotalCaptureResult) {
+        if (exposureLocked || ++autoExposureResults < AUTO_EXPOSURE_FRAMES) {
+            return
+        }
+        val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
+        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
+        val builder = requestBuilder ?: return
+        val isoRange =
+            cameraManager
+                .getCameraCharacteristics(cameraId)
+                .get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return
+        exposureLocked = true
+
+        val lockedExposureNs = minOf(exposureNs, MAX_EXPOSURE_NS)
+        // If the gain runs out the frames come out darker, which is still better than blurred.
+        val lockedIso = (iso * exposureNs / lockedExposureNs).coerceIn(isoRange.lower.toLong(), isoRange.upper.toLong())
+
+        builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+        builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, lockedExposureNs)
+        builder.set(CaptureRequest.SENSOR_SENSITIVITY, lockedIso.toInt())
+        builder.set(CaptureRequest.SENSOR_FRAME_DURATION, FRAME_DURATION_NS)
+        session?.setRepeatingRequest(builder.build(), captureCallback, cameraHandler)
+        Log.i(TAG, "Exposure locked: $exposureNs ns iso $iso -> $lockedExposureNs ns iso $lockedIso")
+    }
+
     /** PGM because it is the luma plane plus a header: lossless and no encoder in the capture path. */
     private fun writePgm(file: File, image: android.media.Image) {
         val plane = image.planes[0]
@@ -246,6 +284,13 @@ class Recording(private val context: Context, private val dir: File, private val
     companion object {
         const val TAG = "OpenViewRecorder"
         val FRAME_SIZE = Size(640, 480)
+        const val FRAME_DURATION_NS = 33_333_333L
+
+        // At 1 rad/s a 5 ms exposure blurs about 2.5 px at this resolution.
+        const val MAX_EXPOSURE_NS = 5_000_000L
+
+        // Frames auto exposure gets to converge before the exposure is locked.
+        const val AUTO_EXPOSURE_FRAMES = 30
 
         // Units: nanoseconds, except iso and focus distance (diopters).
         const val FRAMES_HEADER =

@@ -162,7 +162,15 @@ def analyze(rec, with_offset=True):
         }
 
     if with_offset and len(frames) and len(gyro):
-        report["camera_imu_offset"] = camera_imu_offset(rec, frames, gyro)
+        offset = camera_imu_offset(rec, frames, gyro)
+        if offset and offset["gyro_minus_camera_ms"] is not None:
+            # A frame is stamped when its first row starts exposing, but what it
+            # shows was gathered on average half an exposure and half a readout
+            # later. Whatever is left after that is a real clock disagreement.
+            expected = float(np.nanmedian(frames[:, 1]) / 2e6 + np.nanmedian(frames[:, 2]) / 2e6)
+            offset["expected_from_exposure_and_readout_ms"] = expected
+            offset["residual_clock_offset_ms"] = offset["gyro_minus_camera_ms"] - expected
+        report["camera_imu_offset"] = offset
 
     return report
 

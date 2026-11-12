@@ -44,7 +44,7 @@ Ocupa unos 8 MB por segundo.
 
 ## Limitaciones
 
-- Una sola cámara y exposición automática: en interior la exposición sube a ~30 ms y hay
-  desenfoque de movimiento.
+- Una sola cámara. La exposición se fija en 5 ms como máximo tras el primer segundo (antes
+  de eso manda la exposición automática); con poca luz las imágenes salen ruidosas u oscuras.
 - Sin trayectoria de referencia todavía.
 - Si otra app pasa a primer plano la grabación se detiene: Android retira la cámara.
