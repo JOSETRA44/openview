@@ -1,0 +1,3 @@
+[submodule "third_party/monado"]
+	path = third_party/monado
+	url = https://gitlab.freedesktop.org/monado/monado.git
