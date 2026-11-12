@@ -1,0 +1,128 @@
+diff --git a/src/xrt/compositor/main/comp_target_swapchain.c b/src/xrt/compositor/main/comp_target_swapchain.c
+index 75d35d4a..7c135848 100644
+--- a/src/xrt/compositor/main/comp_target_swapchain.c
++++ b/src/xrt/compositor/main/comp_target_swapchain.c
+@@ -25,6 +25,12 @@
+ #include <assert.h>
+ #include <stdlib.h>
+ 
++#if defined(XRT_OS_ANDROID) && defined(__LP64__)
++#include <android/choreographer.h>
++#include <android/looper.h>
++#define COMP_HAVE_ANDROID_VSYNC
++#endif
++
+ 
+ /*
+  *
+@@ -48,6 +54,11 @@
+  */
+ DEBUG_GET_ONCE_NUM_OPTION(preferred_at_least_image_count, "XRT_COMPOSITOR_PREFERRED_IMAGE_COUNT", 2)
+ DEBUG_GET_ONCE_BOOL_OPTION(use_present_wait, "XRT_COMPOSITOR_USE_PRESENT_WAIT", false)
++#ifdef COMP_HAVE_ANDROID_VSYNC
++// Shifts the vsync times reported to the pacer, to tune where in the refresh cycle frames are queued.
++DEBUG_GET_ONCE_FLOAT_OPTION(android_vsync_offset_ms, "XRT_COMPOSITOR_ANDROID_VSYNC_OFFSET_MS", 0.0f)
++#endif
++
+ DEBUG_GET_ONCE_BOOL_OPTION(use_display_timing, "XRT_COMPOSITOR_USE_DISPLAY_TIMING", true)
+ 
+ static inline struct vk_bundle *
+@@ -641,6 +652,71 @@ create_vblank_event_thread(struct comp_target *ct)
+ }
+ #endif
+ 
++#ifdef COMP_HAVE_ANDROID_VSYNC
++/*
++ * Android has no vblank events through Vulkan, so without this the pacer
++ * free-runs on a timer and drifts through the refresh cycle: frames then reach
++ * SurfaceFlinger at a random phase and some miss their vsync. Choreographer
++ * reports the vsync timeline in CLOCK_MONOTONIC, which the pacer locks to.
++ *
++ * The callback variant taking a long is the only one available at our minimum
++ * API level, and long only holds nanoseconds on 64-bit ABIs.
++ */
++#pragma GCC diagnostic push
++#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
++static void
++android_vsync_callback(long frame_time_ns, void *data)
++{
++	struct comp_target_swapchain *cts = (struct comp_target_swapchain *)data;
++
++	os_thread_helper_lock(&cts->vblank.event_thread);
++	cts->vblank.last_vblank_ns = (uint64_t)((int64_t)frame_time_ns + cts->vblank.android_offset_ns);
++	os_thread_helper_unlock(&cts->vblank.event_thread);
++
++	// Callbacks are one-shot.
++	AChoreographer_postFrameCallback(AChoreographer_getInstance(), android_vsync_callback, data);
++}
++
++static void *
++run_android_vsync_thread(void *ptr)
++{
++	struct comp_target_swapchain *cts = (struct comp_target_swapchain *)ptr;
++
++	os_thread_name_self("Vsync Events");
++	U_TRACE_SET_THREAD_NAME("Vsync Events");
++
++	// Choreographer delivers callbacks on the looper of the thread that posted them.
++	ALooper_prepare(0);
++	AChoreographer_postFrameCallback(AChoreographer_getInstance(), android_vsync_callback, cts);
++
++	while (os_thread_helper_is_running(&cts->vblank.event_thread)) {
++		// The timeout bounds how long stopping the thread takes.
++		ALooper_pollOnce(100, NULL, NULL, NULL);
++	}
++
++	return NULL;
++}
++#pragma GCC diagnostic pop
++
++static bool
++create_android_vsync_thread(struct comp_target *ct)
++{
++	struct comp_target_swapchain *cts = (struct comp_target_swapchain *)ct;
++
++	cts->vblank.android_offset_ns = time_ms_f_to_ns(debug_get_float_option_android_vsync_offset_ms());
++
++	int thread_ret = os_thread_helper_start(&cts->vblank.event_thread, run_android_vsync_thread, cts);
++	if (thread_ret != 0) {
++		COMP_ERROR(ct->c, "Failed to start vsync event thread");
++		return false;
++	}
++
++	cts->vblank.thread_running = true;
++
++	return true;
++}
++#endif
++
+ static void
+ target_fini_semaphores(struct comp_target_swapchain *cts)
+ {
+@@ -909,6 +985,12 @@ comp_target_swapchain_create_images(struct comp_target *ct,
+ 
+ 	create_image_views(cts);
+ 
++#ifdef COMP_HAVE_ANDROID_VSYNC
++	if (!cts->vblank.thread_running && create_android_vsync_thread(ct)) {
++		COMP_INFO(ct->c, "Started vsync event thread, pacing follows Choreographer.");
++	}
++#endif
++
+ #ifdef VK_EXT_display_control
+ 	if (!check_surface_counter_caps(ct, vk, cts)) {
+ 		COMP_ERROR(ct->c, "Failed to query surface counter capabilities");
+diff --git a/src/xrt/compositor/main/comp_target_swapchain.h b/src/xrt/compositor/main/comp_target_swapchain.h
+index bc85aa87..d15ff4c0 100644
+--- a/src/xrt/compositor/main/comp_target_swapchain.h
++++ b/src/xrt/compositor/main/comp_target_swapchain.h
+@@ -106,6 +106,9 @@ struct comp_target_swapchain
+ 		//! Protected by event_thread lock.
+ 		uint64_t last_vblank_ns;
+ 
++		//! Added to vsync times from Choreographer, Android only.
++		int64_t android_offset_ns;
++
+ 		//! Thread waiting on vblank_event_fence (first pixel out).
+ 		struct os_thread_helper event_thread;
+ 
