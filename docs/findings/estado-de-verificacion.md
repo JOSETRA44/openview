@@ -1,6 +1,6 @@
 # Estado de verificación
 
-Actualizado: 2026-11-11. La verificación se hace en GitHub Actions (`.github/workflows/build.yml`).
+Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/workflows/build.yml`).
 
 | Elemento | Estado |
 |---|---|
@@ -11,9 +11,13 @@ Actualizado: 2026-11-11. La verificación se hace en GitHub Actions (`.github/wo
 | Cliente OpenXR → runtime → IPC → servicio | Verificado en CI: `openxr_runtime_list` crea la instancia (`xrCreateInstance`), obtiene el sistema (`xrGetSystem`) y el servicio registra `Client 1 connected`. Vulkan por software (lavapipe) sobre Xvfb |
 | Renderizado de frames (`hello_xr`) | No ejecutado |
 | El parche 0001 compila | Verificado en CI para arm64-v8a, armeabi-v7a, x86 y x86_64: `monado-service` de Android enlaza `drv_android` y el build termina sin errores. Su comportamiento en ejecución **no** está probado |
-| APK Android (Monado `outOfProcess` debug + parches) | Verificado en CI; se publica como artefacto `monado-outOfProcess-debug-apk` (~80 MB) |
-| Módulo Gradle propio de OpenView sobre `android_common` | No escrito: el APK actual es el de Monado, con su nombre e identidad |
-| `hello_xr` en teléfono, frame time, térmica, efecto de la predicción | No ejecutado: requiere dispositivo |
+| APK propio de OpenView (`dev.openview.runtime`, arm64-v8a y x86_64) | Verificado en CI; artefacto `openview-debug-apk`, firmado con una clave de depuración fija |
+| OpenView sirve a `hello_xr` en un teléfono | Verificado en un Infinix X6885 durante los primeros segundos; después el fabricante congela el proceso. Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
+| Predicción de pose: conversión de reloj y límite | Verificado en ese dispositivo con las estadísticas del driver |
+| Efecto visual de la predicción, error angular | No medido |
+| Cadencia real de frames (SurfaceFlinger) | No medido |
+| Térmica con una aplicación exigente | No medido; solo `hello_xr` |
+| Otros teléfonos | Ninguno probado |
 
 ## Hallazgos del primer build
 
@@ -28,5 +32,5 @@ Actualizado: 2026-11-11. La verificación se hace en GitHub Actions (`.github/wo
 
 ## Entorno local
 
-La máquina de desarrollo actual tiene el disco del sistema casi lleno y no hay dispositivo
-Android conectado, así que por ahora no se compila en local.
+El disco del sistema de la máquina de desarrollo es pequeño: los builds se hacen en CI y los
+artefactos y capturas se guardan en una unidad externa.

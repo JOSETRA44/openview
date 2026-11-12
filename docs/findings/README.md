@@ -14,4 +14,5 @@ Archivos:
 - [monado-codigo.md](monado-codigo.md) — lectura del código de Monado
 - [ecosistema.md](ecosistema.md) — alternativas, VIO abiertos, licencias
 - [android-plataforma.md](android-plataforma.md) — restricciones de Android
+- [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) — mediciones en un teléfono real
 - [estado-de-verificacion.md](estado-de-verificacion.md) — qué se ha ejecutado y qué no
