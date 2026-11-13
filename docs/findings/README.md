@@ -15,4 +15,5 @@ Archivos:
 - [ecosistema.md](ecosistema.md) — alternativas, VIO abiertos, licencias
 - [android-plataforma.md](android-plataforma.md) — restricciones de Android
 - [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) — mediciones en un teléfono real
+- [vio-evaluacion.md](vio-evaluacion.md) — resultados de seguimiento 6DoF sobre datasets
 - [estado-de-verificacion.md](estado-de-verificacion.md) — qué se ha ejecutado y qué no

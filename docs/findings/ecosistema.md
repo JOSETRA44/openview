@@ -31,9 +31,9 @@ Licencias: **Verificado** en cada repositorio. No se revisaron las licencias de 
 **Límite**: no encontramos ningún VIO monocular con licencia permisiva y demostrado en un
 teléfono Android. Los dos proyectos que dan 6DoF en teléfono usan ARCore.
 
-**Hipótesis** (la de mayor riesgo del proyecto): Basalt u OKVIS2 pueden funcionar con una sola
-cámara rolling-shutter y el IMU de un teléfono. Prueba: Fase 3, datasets propios contra
-trayectoria de ARCore.
+La hipótesis de mayor riesgo del proyecto era que Basalt u OKVIS2 funcionaran con una sola
+cámara. Para Basalt quedó **refutada** (rechaza arrancar con una cámara); para OKVIS2 sigue
+sin probar. Ver [vio-evaluacion.md](vio-evaluacion.md).
 
 ## Aplicaciones
 

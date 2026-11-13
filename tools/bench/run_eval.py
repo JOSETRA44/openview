@@ -28,6 +28,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ate import evaluate, load_trajectory  # noqa: E402
 
 # Ground truth directory names used by EuRoC, TUM-VI and the Monado datasets.
+# A tracker that is working logs playback progress continuously.
+STALL_SECONDS = 30
+
 GT_DEVICES = ["gt", "state_groundtruth_estimate0", "mocap0", "vicon0", "leica0"]
 
 
@@ -90,13 +93,26 @@ def run_one(args, sequence, mode, calib_path, out_dir):
             [args.cli, "slambatch", str(sequence), str(slam_config), str(out_dir) + "/"],
             stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, env=env,
         )
-        try:
-            # slambatch does not exit when the tracker fails to start, so a run is
-            # only given what a tracker far slower than real time would need.
-            result["exit_code"] = process.wait(timeout=min(args.timeout, 120 + 10 * duration_s))
-        except subprocess.TimeoutExpired:
-            process.kill()
-            result["exit_code"] = "timeout"
+        # slambatch does not exit when the tracker fails to start: it keeps
+        # waiting on a tracker that will never produce a pose. A run whose log
+        # has gone quiet is therefore stopped instead of left to time out.
+        deadline = started + min(args.timeout, 120 + 10 * duration_s)
+        last_size, last_change = -1, started
+        while True:
+            try:
+                result["exit_code"] = process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                pass
+            now = time.monotonic()
+            size = log_path.stat().st_size
+            if size != last_size:
+                last_size, last_change = size, now
+            if now > deadline or now - last_change > STALL_SECONDS:
+                process.kill()
+                process.wait()
+                result["exit_code"] = "timeout" if now > deadline else "stalled"
+                break
     wall_s = time.monotonic() - started
     result["wall_s"] = wall_s
     # Played at maximum speed: above 1 the tracker keeps up with a live camera on this machine.
@@ -105,8 +121,10 @@ def run_one(args, sequence, mode, calib_path, out_dir):
     tracking = out_dir / "tracking.csv"
     groundtruth = find_groundtruth(sequence)
     if result["exit_code"] != 0 or not tracking.exists():
-        result["error"] = "tracker did not finish"
-        result["log_tail"] = log_path.read_text(errors="replace").splitlines()[-15:]
+        log_lines = [line for line in log_path.read_text(errors="replace").splitlines() if line.strip()]
+        # The backend's own last words are the best explanation available.
+        result["error"] = log_lines[-1].strip()[:120] if log_lines else "tracker did not finish"
+        result["log_tail"] = log_lines[-15:]
         return result
     if groundtruth is None:
         result["error"] = "sequence has no ground truth"
