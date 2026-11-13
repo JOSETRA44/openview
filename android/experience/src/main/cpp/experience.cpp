@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "camera_uv.h"
 
 #define INFO(...) __android_log_print(ANDROID_LOG_INFO, "OpenViewXR", __VA_ARGS__)
 #define ERROR(...) __android_log_print(ANDROID_LOG_ERROR, "OpenViewXR", __VA_ARGS__)
@@ -82,11 +83,11 @@ struct Eye {
 };
 
 struct Experience {
-    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{false};
+    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true};
     jobject activity=nullptr;
     JavaVM *vm=nullptr;
     JNIEnv *env=nullptr;
-    jmethodID cameraCreate=nullptr,cameraUpdate=nullptr,cameraRelease=nullptr,cameraAspectMethod=nullptr;
+    jmethodID cameraCreate=nullptr,cameraUpdate=nullptr,cameraRelease=nullptr,cameraAspectMethod=nullptr,cameraRotationMethod=nullptr;
     jfloatArray cameraTransformArray=nullptr;
     XrInstance instance=XR_NULL_HANDLE;
     XrSession session=XR_NULL_HANDLE;
@@ -101,6 +102,7 @@ struct Experience {
     GLuint sceneProgram=0,cameraProgram=0,vao=0,vbo=0,cameraTexture=0;
     Mat cameraTransform=identity();
     float cameraAspect=16.f/9.f;
+    int cameraDisplayDegrees=0;
     std::vector<Vertex> grid,objects;
     uint64_t frames=0,cameraFrames=0;
 
@@ -113,8 +115,9 @@ struct Experience {
         cameraUpdate=env->GetMethodID(cls,"updateCameraTexture","([F)J");
         cameraRelease=env->GetMethodID(cls,"releaseCameraTexture","()V");
         cameraAspectMethod=env->GetMethodID(cls,"getCameraAspect","()F");
+        cameraRotationMethod=env->GetMethodID(cls,"getCameraDisplayRotation","()I");
         env->DeleteLocalRef(cls); javaCheck();
-        if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod) throw std::runtime_error("Camera JNI contract missing");
+        if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod||!cameraRotationMethod) throw std::runtime_error("Camera JNI contract missing");
         cameraTransformArray=env->NewFloatArray(16);
 
         PFN_xrInitializeLoaderKHR initialize=nullptr;
@@ -194,7 +197,7 @@ struct Experience {
             "#version 300 es\nlayout(location=0) in vec3 pos;layout(location=1) in vec3 color;uniform mat4 mvp;out vec3 c;void main(){c=color;gl_Position=mvp*vec4(pos,1.0);}",
             "#version 300 es\nprecision mediump float;in vec3 c;out vec4 outColor;void main(){outColor=vec4(c,1.0);}");
         cameraProgram=program(
-            "#version 300 es\nuniform mat4 transform;uniform vec2 crop;out vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);vec2 sampleUV=vec2(0.5)+(p-vec2(0.5))*crop;uv=(transform*vec4(sampleUV,0,1)).xy;gl_Position=vec4(p*2.0-1.0,0,1);}",
+            "#version 300 es\nuniform mat4 transform;uniform vec2 crop;uniform vec2 rotationCS;out vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);vec2 q=(p-vec2(0.5))*crop;vec2 sampleUV=vec2(0.5)+vec2(rotationCS.x*q.x-rotationCS.y*q.y,rotationCS.y*q.x+rotationCS.x*q.y);uv=(transform*vec4(sampleUV,0,1)).xy;gl_Position=vec4(p*2.0-1.0,0,1);}",
             "#version 300 es\n#extension GL_OES_EGL_image_external_essl3 : require\nprecision mediump float;uniform samplerExternalOES image;in vec2 uv;out vec4 outColor;void main(){outColor=vec4(texture(image,uv).rgb,1.0);}");
         glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
         glGenTextures(1,&cameraTexture); glBindTexture(GL_TEXTURE_EXTERNAL_OES,cameraTexture);
@@ -215,6 +218,7 @@ struct Experience {
             cameraActive=env->CallBooleanMethod(activity,cameraCreate,static_cast<jint>(cameraTexture)); javaCheck();
             if(cameraActive) {
                 cameraAspect=env->CallFloatMethod(activity,cameraAspectMethod); javaCheck();
+                cameraDisplayDegrees=env->CallIntMethod(activity,cameraRotationMethod); javaCheck();
                 if(!std::isfinite(cameraAspect)||cameraAspect<=0) cameraAspect=16.f/9.f;
             }
             if(!cameraActive) {
@@ -333,11 +337,13 @@ struct Experience {
                         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES,cameraTexture);
                         glUniform1i(glGetUniformLocation(cameraProgram,"image"),0);
                         // Center-crop the preview to each eye's viewport instead of stretching it.
-                        // SurfaceTexture's producer transform (including its vertical flip) follows the crop.
+                        // Direct Camera2 SurfaceTexture includes sensor-to-natural-display orientation.
+                        // Inverse sample rotation is -display degrees in GL's y-up UV coordinates.
+                        // This is Android's view postRotate(-displayDegrees), expressed for a sampler.
                         const float eyeAspect=static_cast<float>(eye.width)/eye.height;
-                        const float cropX=std::min(1.f,eyeAspect/cameraAspect);
-                        const float cropY=std::min(1.f,cameraAspect/eyeAspect);
-                        glUniform2f(glGetUniformLocation(cameraProgram,"crop"),cropX,cropY);
+                        const auto uv=cameraUv(cameraAspect,eyeAspect,cameraDisplayDegrees);
+                        glUniform2f(glGetUniformLocation(cameraProgram,"crop"),uv.cropX,uv.cropY);
+                        glUniform2f(glGetUniformLocation(cameraProgram,"rotationCS"),uv.cosine,uv.sine);
                         glUniformMatrix4fv(glGetUniformLocation(cameraProgram,"transform"),1,GL_FALSE,cameraTransform.data());
                         glDrawArrays(GL_TRIANGLES,0,3);
                     }

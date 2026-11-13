@@ -3,6 +3,7 @@
     <string name="home_title">Tu propio espacio.</string>
     <string name="home_intro">Ponte el visor y explora girando la cabeza.</string>
     <string name="home_enter">Entrar al espacio</string>
+    <string name="home_controls">En el espacio: Volumen + centra la vista · Volumen − cambia de modo · Atrás sale.</string>
     <string name="home_camera">Ver mi entorno</string>
     <string name="home_camera_hint">Cámara en directo con objetos virtuales. Solo pediremos acceso a la cámara en este modo.</string>
     <string name="home_allow_overlay">Permitir mostrar sobre otras apps</string>

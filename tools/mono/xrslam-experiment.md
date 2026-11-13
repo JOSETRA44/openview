@@ -1,7 +1,7 @@
 # Experimento monocular XRSLAM
 
 Ejecutable experimental, separado de Monado y sin adaptador VIT. El workflow
-`xrslam-eval` compila y ejecuta cam0+IMU de EuRoC MH01, con un límite total de
+`xrslam-eval` compila y ejecuta cam0+IMU de EuRoC V1_01_easy, con un límite total de
 20 minutos y de 300 segundos para el tracker. No descarga datos en el teléfono.
 
 ## Reproducibilidad
@@ -12,8 +12,12 @@ Ejecutable experimental, separado de Monado y sin adaptador VIT. El workflow
 - spdlog: `a7148b718ea2fabb8387cb90aee9bf448da63e65` (1.3.1).
 - yaml-cpp: `0579ae3d976091d7d664aa9d2527e0d0cff25763` (0.7.0).
 - OpenCV y demás paquetes de sistema: Ubuntu 22.04; versiones registradas en el
-  artefacto, no fijadas a una imagen inmutable. SHA256 del ZIP descargado registrado
-  para detectar diferencias entre corridas, no contrastado con hash del editor.
+  artefacto, no fijadas a una imagen inmutable.
+- Datos: réplica pública `pepijn223/euroc-mirror`, revisión
+  `d05bd6a92a5f456562153f83d65805fea27cb57d`, `V1_01_easy.zip`, SHA256
+  `a920fe5b5e69a6ad19b32f1cfaf90ac2f59d45dfd1ca18cc9722e07684ba45fa`.
+  Se verifica contra el hash LFS publicado por la réplica, no contra un hash del
+  editor original. Origen, checksum y archivos de entrada quedan identificados.
 
 `xrslam_prepare.py` comprueba el commit y hace cambios **de build**: omite el player
 gráfico y el ejecutable de relocalización, fija las dependencias y agrega nuestro
@@ -49,13 +53,18 @@ cmake -S /ruta/al/clon-fijado -B build-xrslam -G Ninja \
   -DOPENVIEW_HEADLESS_SOURCE="$PWD/tools/mono/xrslam_headless.cpp"
 cmake --build build-xrslam --target openview-xrslam-headless --parallel 2
 python3 tools/mono/xrslam_eval.py --binary build-xrslam/openview-xrslam-headless \
-  --source /ruta/al/clon-fijado --sequence /ruta/MH_01_easy/mav0 --output result
+  --source /ruta/al/clon-fijado --sequence /ruta/V1_01_easy/mav0 --sequence-name V1_01_easy --output result
 ```
 
 Las dos pruebas del evaluador pasan localmente: unidades temporales correctas,
 alineación rígida, escala incorrecta penalizada y timestamps duplicados rechazados.
-La compilación y ejecución real del tracker deben verificarse en el workflow;
-este documento no las da por hechas.
+**Verificado en CI:** [corrida 43354832914](https://github.com/JOSETRA44/openview/actions/runs/43354832914)
+compiló el core y nuestro harness. Falló después al descargar MH01: el servidor
+legacy `robotics.ethz.ch` no respondió. El editor ahora distribuye un archivo
+Machine Hall de aproximadamente 12 GB, según las
+[instrucciones actualizadas de NVIDIA](https://github.com/nvidia-isaac/cuVSLAM/blob/main/examples/euroc/README.md).
+Se cambió a V1_01_easy (1.15 GB) desde la réplica fijada para poder ejecutar el
+experimento acotado. La ejecución del tracker queda pendiente de la nueva corrida.
 
 ## Fuentes y límites
 
@@ -64,6 +73,13 @@ Fuentes primarias de la revisión:
 [conversión a pose de cuerpo](https://github.com/openxrlab/xrslam/blob/4beb1a942f33da9afbfae2d70e2c641cfc2bb675/xrslam-interface/src/XRSLAMManager.cpp),
 [lector EuRoC](https://github.com/openxrlab/xrslam/blob/4beb1a942f33da9afbfae2d70e2c641cfc2bb675/xrslam-pc/player/src/IO/euroc_dataset_reader.cpp),
 [configuración](https://github.com/openxrlab/xrslam/blob/4beb1a942f33da9afbfae2d70e2c641cfc2bb675/configs/euroc_sensor.yaml).
+
+La configuración pone IMU→cuerpo en identidad y desplazamiento cero. El manager
+recibe gyro xyz en rad/s y aceleración xyz en m/s² sin cambios de ejes; el harness
+lee esas seis columnas de EuRoC en el mismo orden. La salida BODY_POSE conserva
+la posición IMU, mientras CAMERA_POSE añadiría el brazo de palanca: por eso se
+compara BODY_POSE con ground truth del cuerpo. El marco global arbitrario se
+resuelve mediante alineación rígida, no escala.
 
 XRSLAM declara Apache-2.0 para su código. Las dependencias tienen licencias
 independientes; se conservan los archivos LICENSE/COPYING de los paquetes

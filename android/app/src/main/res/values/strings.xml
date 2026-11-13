@@ -5,6 +5,7 @@
     <string name="home_title">A space of your own.</string>
     <string name="home_intro">Put on your viewer and explore by turning your head.</string>
     <string name="home_enter">Enter the space</string>
+    <string name="home_controls">In the space: Volume + centers the view · Volume − switches camera · Back exits.</string>
     <string name="home_camera">See my surroundings</string>
     <string name="home_camera_hint">Live camera with virtual objects. Camera access is requested only in this mode.</string>
     <string name="home_allow_overlay">Allow display over other apps</string>

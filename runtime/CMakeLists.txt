@@ -40,3 +40,11 @@ monado_add_openxr_runtime(
 	LINK_LIBRARIES ipc_client
 	INSTALL
 	)
+
+if(ANDROID)
+	# The loader dlcloses the runtime at xrDestroyInstance, but C++ thread-local
+	# destructors can still run when the caller's Java/native render thread exits.
+	# Keep their code mapped until process exit (observed SIGSEGV in
+	# __cxa_thread_finalize on Infinix X6885). Sessions/IPC still close normally.
+	target_link_options(openxr_openview PRIVATE "-Wl,-z,nodelete")
+endif()

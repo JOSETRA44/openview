@@ -48,6 +48,7 @@ def main():
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--sequence", required=True, type=Path, help="mav0 directory")
+    parser.add_argument("--sequence-name", default="unspecified", help="dataset identity recorded separately from local path")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
@@ -56,7 +57,7 @@ def main():
     if trajectory.exists():
         parser.error("Refusing to reuse a directory containing a trajectory")
     report = {"backend": "XRSLAM", "revision": "4beb1a942f33da9afbfae2d70e2c641cfc2bb675",
-              "status": "failed", "sequence": str(args.sequence), "camera_count": 1}
+              "status": "failed", "sequence": args.sequence_name, "sequence_path": str(args.sequence), "camera_count": 1}
     start = time.monotonic()
     command = [str(args.binary.resolve()), str((args.source / "configs/euroc_slam.yaml").resolve()),
                str((args.source / "configs/euroc_sensor.yaml").resolve()), str(args.sequence.resolve()), str(trajectory.resolve())]

@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.*
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
@@ -54,6 +55,8 @@ class MainActivity : Activity() {
     private val cameraFailed = AtomicBoolean(false)
     private var lastCameraFrameAt = 0L
     private var cameraPreviewAspect = 16f / 9f
+    private var cameraDisplayDegrees = 0
+    private var loggedCameraTransform = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -164,7 +167,24 @@ class MainActivity : Activity() {
                     ?.getOutputSizes(SurfaceTexture::class.java) ?: return false
                 val size = sizes.filter { it.width <= 1280 && it.height <= 720 }
                     .maxByOrNull { it.width * it.height } ?: sizes.minBy { it.width * it.height }
-                cameraPreviewAspect = size.width.toFloat() / size.height
+                val sensorDegrees = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+                @Suppress("DEPRECATION")
+                val displayRotation = windowManager.defaultDisplay.rotation
+                cameraDisplayDegrees = when (displayRotation) {
+                    Surface.ROTATION_90 -> 90
+                    Surface.ROTATION_180 -> 180
+                    Surface.ROTATION_270 -> 270
+                    else -> 0
+                }
+                // A direct Camera2 SurfaceTexture already carries the sensor-to-natural-display
+                // transform. Only display rotation remains; applying sensor rotation again doubles it.
+                val swapDimensions = (sensorDegrees - cameraDisplayDegrees + 360) % 180 != 0
+                cameraPreviewAspect = if (swapDimensions) size.height.toFloat() / size.width
+                    else size.width.toFloat() / size.height
+                loggedCameraTransform = false
+                Log.i(TAG, "camera orientation sensor=$sensorDegrees display=$cameraDisplayDegrees " +
+                    "sampleRotation=${-cameraDisplayDegrees} buffer=${size.width}x${size.height} aspect=$cameraPreviewAspect " +
+                    "sensorTransform=SurfaceTexture")
                 val thread = HandlerThread("OpenView-camera").also { it.start() }
                 cameraThread = thread
                 val handler = Handler(thread.looper)
@@ -200,6 +220,11 @@ class MainActivity : Activity() {
                                                 val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                                                     addTarget(surface)
                                                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+                                                    if (Build.VERSION.SDK_INT >= 31 && characteristics.get(
+                                                            CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES
+                                                        )?.contains(CaptureRequest.SCALER_ROTATE_AND_CROP_NONE) == true) {
+                                                        set(CaptureRequest.SCALER_ROTATE_AND_CROP, CaptureRequest.SCALER_ROTATE_AND_CROP_NONE)
+                                                    }
                                                 }
                                                 session.setRepeatingRequest(request.build(), null, handler)
                                                 Log.i(TAG, "camera streaming ${size.width}x${size.height}; monoscopic background")
@@ -239,6 +264,9 @@ class MainActivity : Activity() {
     fun getCameraAspect(): Float = synchronized(cameraLock) { cameraPreviewAspect }
 
     @Suppress("unused")
+    fun getCameraDisplayRotation(): Int = synchronized(cameraLock) { cameraDisplayDegrees }
+
+    @Suppress("unused")
     fun updateCameraTexture(transform: FloatArray): Long {
         synchronized(cameraLock) {
             // A frozen last frame must not masquerade as a live view of the surroundings.
@@ -252,6 +280,10 @@ class MainActivity : Activity() {
             if (cameraAvailable.getAndSet(false)) {
                 cameraTexture?.updateTexImage()
                 cameraTexture?.getTransformMatrix(transform)
+                if (!loggedCameraTransform) {
+                    loggedCameraTransform = true
+                    Log.i(TAG, "camera SurfaceTexture matrix=" + transform.joinToString(","))
+                }
             }
             return cameraFrames.get()
         }

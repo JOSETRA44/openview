@@ -52,8 +52,15 @@ primera integración funcional para ver cámara y contenido virtual juntos.
 
 El vídeo conserva su proporción mediante un recorte centrado para cada ojo, aplicado antes
 de la transformación de `SurfaceTexture`; no se estira la imagen a la proporción del visor.
-La orientación está preparada para el teléfono de referencia en paisaje (sensor 90° y
-pantalla 90°). La rotación en otras combinaciones de sensor/pantalla sigue sin verificarse.
+Camera2 escribe la orientación del sensor en la transformación de `SurfaceTexture`. Por
+eso se aplica **solo la rotación de pantalla restante**, antes de esa matriz, y se calcula
+la proporción final a partir de las dimensiones, `SENSOR_ORIENTATION` y `Display.rotation`.
+La rotación de muestreo es `-displayRotation` en coordenadas GL (Y hacia arriba), equivalente a la
+rotación de vista `-displayRotation` de Android (Y hacia abajo). Se desactiva el recorte/rotación
+automático del HAL cuando admite `SCALER_ROTATE_AND_CROP_NONE`. El log registra orientación
+del sensor, pantalla, corrección y matriz de productor al primer frame. El test de host
+`tests/camera_uv_test.cpp` comprueba cuatro rotaciones mediante correspondencias de esquinas,
+centro y límites de recorte; la verificación visual de otros dispositivos sigue pendiente.
 
 ## Verificación y telemetría
 
@@ -84,5 +91,7 @@ se registran en el informe de integración del repositorio; no se presuponen aqu
 - [SDK y changelog oficial de Khronos](https://github.com/KhronosGroup/OpenXR-SDK/blob/main/CHANGELOG.SDK.md).
 - [Inicialización Android del loader](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrLoaderInitInfoAndroidKHR.html).
 - [Binding OpenGL ES Android](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrGraphicsBindingOpenGLESAndroidKHR.html).
+- [Transformación de cámara ya presente en la Surface](https://developer.android.com/reference/androidx/camera/core/SurfaceRequest.TransformationInfo#hasCameraTransform()).
+- [Rotación de pantalla sobre preview orientado al dispositivo natural](https://developer.android.com/codelabs/android-camera2-preview).
 
 El loader se distribuye bajo Apache-2.0 o MIT; el código propio usa BSL-1.0.

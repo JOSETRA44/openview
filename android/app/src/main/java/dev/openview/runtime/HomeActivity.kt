@@ -77,6 +77,7 @@ class HomeActivity : Activity() {
         column.addView(action(getString(R.string.home_enter), true) { enter(false) })
         column.addView(action(getString(R.string.home_camera)) { enter(true) })
         column.addView(label(getString(R.string.home_camera_hint), 13f, muted))
+        column.addView(label(getString(R.string.home_controls), 13f, muted))
         notice = label("", 14f, accent)
         column.addView(notice)
         permission = action(getString(R.string.home_allow_overlay)) {

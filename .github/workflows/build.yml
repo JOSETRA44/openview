@@ -41,6 +41,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends python3-numpy
           python3 tools/sensor-recorder/test_analyze.py
           python3 tools/bench/test_ate.py
+          c++ -std=c++17 android/experience/tests/camera_uv_test.cpp -o /tmp/camera_uv_test
+          /tmp/camera_uv_test
 
       # End to end: OpenXR loader -> libopenxr_openview -> IPC -> openview-service,
       # on a software Vulkan driver and a virtual X display.
@@ -79,7 +81,7 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
 
       - name: Build APK
-        run: ./gradlew --no-daemon :app:assembleDebug :recorder:assembleDebug :experience:assembleDebug
+        run: ./gradlew --no-daemon :app:assembleDebug :recorder:assembleDebug
 
       - uses: actions/upload-artifact@v4
         with:
@@ -91,6 +93,22 @@ jobs:
           name: sensor-recorder-debug-apk
           path: tools/sensor-recorder/app/build/outputs/apk/debug/*.apk
 
+  # Independent client: iterate on the product without waiting for the native runtime build.
+  experience:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Android client build tools
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
+      - name: Build OpenView experience
+        run: ./gradlew --no-daemon :experience:assembleDebug
       - uses: actions/upload-artifact@v4
         with:
           name: openview-experience-debug-apk

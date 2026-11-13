@@ -13,7 +13,10 @@ jobs:
     timeout-minutes: 20
     env:
       XRSLAM_REVISION: 4beb1a942f33da9afbfae2d70e2c641cfc2bb675
-      DATASET_URL: https://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_01_easy/MH_01_easy.zip
+      # ETH's legacy per-sequence host no longer responds; current official
+      # distribution bundles >10GB. Pin a public mirror of the shorter Vicon run.
+      DATASET_URL: https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/d05bd6a92a5f456562153f83d65805fea27cb57d/V1_01_easy.zip
+      DATASET_SHA256: a920fe5b5e69a6ad19b32f1cfaf90ac2f59d45dfd1ca18cc9722e07684ba45fa
     steps:
       - uses: actions/checkout@v4
       - name: Dependencies and scoring tests
@@ -47,10 +50,12 @@ jobs:
               git -C "$directory" rev-parse HEAD >> results/dependency-revisions.txt
             fi
           done
-      - name: Download EuRoC MH01 and keep cam0 + IMU only
-        timeout-minutes: 3
+      - name: Download pinned EuRoC V101 mirror and keep cam0 + IMU only
+        timeout-minutes: 5
         run: |
-          curl --fail --location --retry 2 --max-time 150 "$DATASET_URL" -o sequence.zip
+          curl --fail --location --retry 1 --connect-timeout 20 --max-time 240 "$DATASET_URL" -o sequence.zip
+          echo "$DATASET_SHA256  sequence.zip" | sha256sum --check
+          printf '%s\n' "$DATASET_URL" > results/dataset-source.txt
           sha256sum sequence.zip > results/dataset-sha256.txt
           unzip -q sequence.zip 'mav0/cam0/*' 'mav0/imu0/*' 'mav0/state_groundtruth_estimate0/*' -d sequence
       - name: Run and score monocular tracking
@@ -58,7 +63,7 @@ jobs:
         run: |
           set -o pipefail
           python3 tools/mono/xrslam_eval.py --binary build-xrslam/openview-xrslam-headless \
-            --source upstream --sequence sequence/mav0 --output results/run --timeout 300 2>&1 | tee results/evaluation.log
+            --source upstream --sequence sequence/mav0 --sequence-name V1_01_easy --output results/run --timeout 300 2>&1 | tee results/evaluation.log
       - name: Publish measured status
         if: always()
         run: |
