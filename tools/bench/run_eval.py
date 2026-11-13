@@ -91,7 +91,9 @@ def run_one(args, sequence, mode, calib_path, out_dir):
             stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT, env=env,
         )
         try:
-            result["exit_code"] = process.wait(timeout=args.timeout)
+            # slambatch does not exit when the tracker fails to start, so a run is
+            # only given what a tracker far slower than real time would need.
+            result["exit_code"] = process.wait(timeout=min(args.timeout, 120 + 10 * duration_s))
         except subprocess.TimeoutExpired:
             process.kill()
             result["exit_code"] = "timeout"

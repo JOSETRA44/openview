@@ -43,6 +43,14 @@ jobs:
           sudo apt-get install -y ./basalt.deb
           ls -l /usr/lib/x86_64-linux-gnu/libbasalt* /usr/share/basalt
 
+      # The package declares no dependencies, so a missing library would only
+      # show up later as a tracker that fails to load.
+      - name: Basalt runtime libraries
+        run: |
+          sudo apt-get install -y --no-install-recommends libfmt9 libtbb12
+          missing="$(ldd /usr/lib/x86_64-linux-gnu/libbasalt.so.* | grep 'not found' || true)"
+          if [ -n "$missing" ]; then echo "$missing"; exit 1; fi
+
       - name: Apply Monado patches
         run: git -C third_party/monado apply "$PWD"/patches/monado/*.patch
 
