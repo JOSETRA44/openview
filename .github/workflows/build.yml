@@ -40,6 +40,7 @@ jobs:
         run: |
           sudo apt-get install -y --no-install-recommends python3-numpy
           python3 tools/sensor-recorder/test_analyze.py
+          python3 tools/bench/test_ate.py
 
       # End to end: OpenXR loader -> libopenxr_openview -> IPC -> openview-service,
       # on a software Vulkan driver and a virtual X display.

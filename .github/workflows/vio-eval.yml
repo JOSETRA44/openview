@@ -1,0 +1,84 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+
+# Scores a visual-inertial tracking backend on public sequences with ground
+# truth. Slow and download-heavy, so it only runs on demand or when the
+# evaluation itself changes.
+name: vio-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      sequences:
+        description: Monado SLAM dataset sequences (MOO_others), space separated
+        default: MOO09_short_1_updown MOO10_short_2_panorama MOO11_short_3_backandforth MOO07_mapping_easy
+  push:
+    paths:
+      - tools/bench/**
+      - .github/workflows/vio-eval.yml
+
+env:
+  # Basalt, Monado's fork: release-30ece25f (2026-07-24), library only.
+  BASALT_DEB: https://gitlab.freedesktop.org/mateosss/basalt/-/jobs/105779082/artifacts/raw/basalt-monado-ubuntu-24.04-haswell-amd64.deb
+  # Monado SLAM datasets, CC-BY-4.0, Collabora.
+  DATASETS: https://huggingface.co/datasets/collabora/monado-slam-datasets/resolve/main/M_monado_datasets/MO_odyssey_plus/MOO_others
+  SEQUENCES: ${{ inputs.sequences || 'MOO09_short_1_updown MOO10_short_2_panorama MOO11_short_3_backandforth MOO07_mapping_easy' }}
+
+jobs:
+  basalt:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libeigen3-dev \
+            libvulkan-dev glslang-tools libgl-dev libopengl-dev libegl-dev \
+            libudev-dev libbsd-dev libcjson-dev libopencv-dev python3-numpy unzip
+          curl -sSL -o basalt.deb "$BASALT_DEB"
+          sudo apt-get install -y ./basalt.deb
+          ls -l /usr/lib/x86_64-linux-gnu/libbasalt* /usr/share/basalt
+
+      - name: Apply Monado patches
+        run: git -C third_party/monado apply "$PWD"/patches/monado/*.patch
+
+      - name: Build monado-cli with the SLAM tracker
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENVIEW_BUILD_EVAL_TOOLS=ON
+          cmake --build build --target cli
+
+      - name: Download sequences
+        run: |
+          mkdir -p data
+          for name in $SEQUENCES; do
+            curl -sSL -o "data/$name.zip" "$DATASETS/$name.zip"
+            unzip -q "data/$name.zip" -d data
+            rm "data/$name.zip"
+          done
+          du -sh data/*
+
+      - name: Evaluate
+        run: |
+          python3 tools/bench/test_ate.py
+          python3 tools/bench/run_eval.py \
+            --cli "$(find build -name monado-cli -type f)" \
+            --vit-library "$(ls /usr/lib/x86_64-linux-gnu/libbasalt.so* | head -1)" \
+            --calib /usr/share/basalt/msdmo_calib.json \
+            --vio-config /usr/share/basalt/msdmo_config.json \
+            --work eval \
+            $(for name in $SEQUENCES; do echo "data/$name"; done)
+          cat eval/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vio-eval
+          path: |
+            eval/results.*
+            eval/**/log.txt
+            eval/**/tracking.csv
+            eval/**/timing.csv
