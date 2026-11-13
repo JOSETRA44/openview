@@ -43,3 +43,7 @@ project(':app').projectDir = new File(rootDir, 'android/app')
 // Standalone tool, shares nothing with the runtime but the build setup.
 include ':recorder'
 project(':recorder').projectDir = new File(rootDir, 'tools/sensor-recorder/app')
+
+// Product experience: a standard OpenXR client, independent of runtime internals.
+include ':experience'
+project(':experience').projectDir = new File(rootDir, 'android/experience')

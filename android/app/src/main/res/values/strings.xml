@@ -2,6 +2,17 @@
 <resources>
     <string name="app_name" translatable="false">OpenView</string>
     <string name="service_name" translatable="false">OpenView OpenXR</string>
+    <string name="home_title">A space of your own.</string>
+    <string name="home_intro">Put on your viewer and explore by turning your head.</string>
+    <string name="home_enter">Enter the space</string>
+    <string name="home_camera">See my surroundings</string>
+    <string name="home_camera_hint">Live camera with virtual objects. Camera access is requested only in this mode.</string>
+    <string name="home_allow_overlay">Allow display over other apps</string>
+    <string name="home_permission_hint">One step before entering: allow OpenView to display over other apps to keep the experience running.</string>
+    <string name="home_ready">Ready to explore</string>
+    <string name="home_missing_experience">Install the OpenView Experience companion APK from the same build to enter the space.</string>
+    <string name="home_settings">Viewer settings and about</string>
+    <string name="home_tracking_hint">Orientation tracking · Physical movement and surface anchoring are not available yet.</string>
     <string name="setup_channel_name">Setup</string>
     <string name="setup_overlay_title">OpenView needs one more permission</string>
     <string name="setup_overlay_text">Allow OpenView to display over other apps. Without it your phone pauses OpenView a few seconds into a session and head tracking stops. Tap to open the setting.</string>

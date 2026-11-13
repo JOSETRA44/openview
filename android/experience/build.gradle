@@ -1,0 +1,46 @@
+// Copyright 2026, OpenView contributors. SPDX-License-Identifier: BSL-1.0
+plugins {
+    id 'com.android.application'
+    id 'kotlin-android'
+}
+
+android {
+    namespace 'dev.openview.experience'
+    compileSdk project.sharedCompileSdk
+    ndkVersion rootProject.ext.ndk_version
+    defaultConfig {
+        applicationId 'dev.openview.experience'
+        minSdk 28
+        targetSdk 31
+        versionCode 1
+        versionName '0.1.0'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+        externalNativeBuild {
+            cmake { arguments '-DANDROID_STL=c++_shared' }
+        }
+    }
+    signingConfigs {
+        debug {
+            storeFile file("${rootDir}/android/debug.keystore")
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
+    }
+    buildFeatures { prefab true }
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version rootProject.ext.cmake_version
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = '17' }
+}
+
+dependencies {
+    implementation 'org.khronos.openxr:openxr_loader_for_android:1.1.36'
+}

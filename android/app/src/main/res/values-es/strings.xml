@@ -1,5 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="home_title">Tu propio espacio.</string>
+    <string name="home_intro">Ponte el visor y explora girando la cabeza.</string>
+    <string name="home_enter">Entrar al espacio</string>
+    <string name="home_camera">Ver mi entorno</string>
+    <string name="home_camera_hint">Cámara en directo con objetos virtuales. Solo pediremos acceso a la cámara en este modo.</string>
+    <string name="home_allow_overlay">Permitir mostrar sobre otras apps</string>
+    <string name="home_permission_hint">Un paso antes de entrar: permite que OpenView se muestre sobre otras apps para mantener la experiencia activa.</string>
+    <string name="home_ready">Todo listo para explorar</string>
+    <string name="home_missing_experience">Instala el APK complementario OpenView Experience de la misma compilación para entrar al espacio.</string>
+    <string name="home_settings">Ajustes del visor y acerca de</string>
+    <string name="home_tracking_hint">Seguimiento de orientación · El desplazamiento físico y los anclajes a superficies aún no están disponibles.</string>
     <string name="setup_channel_name">Configuración</string>
     <string name="setup_overlay_title">OpenView necesita un permiso más</string>
     <string name="setup_overlay_text">Permite que OpenView se muestre sobre otras apps. Sin ese permiso el teléfono pausa OpenView a los pocos segundos de iniciar una sesión y el seguimiento de cabeza se detiene. Toca para abrir el ajuste.</string>

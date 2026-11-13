@@ -6,8 +6,11 @@ local.properties
 *.apk
 .cxx/
 .idea/
+__pycache__/
+*.py[cod]
 .vs/
 .vscode/
 CMakeUserPresets.json
 android/app/build/
+android/experience/build/
 tools/sensor-recorder/app/build/

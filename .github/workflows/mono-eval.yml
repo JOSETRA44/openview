@@ -1,0 +1,31 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+name: mono-tools
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/mono/**
+      - .github/workflows/mono-eval.yml
+  pull_request:
+    paths:
+      - tools/mono/**
+      - .github/workflows/mono-eval.yml
+jobs:
+  calibration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-opencv python3-numpy
+      - name: Calibration recovery and rejection tests
+        run: python3 tools/mono/test_calibrate.py
+      - name: Printable target
+        run: python3 tools/mono/calibrate.py board.svg --board --square-mm 15
+      - uses: actions/upload-artifact@v4
+        with:
+          name: calibration-board
+          path: board.svg
