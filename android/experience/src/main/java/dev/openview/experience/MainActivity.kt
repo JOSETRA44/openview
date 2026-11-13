@@ -51,6 +51,9 @@ class MainActivity : Activity() {
     private val cameraAvailable = AtomicBoolean(false)
     private val cameraFrames = AtomicLong(0)
     private val cameraAllowed = AtomicBoolean(false)
+    private val cameraFailed = AtomicBoolean(false)
+    private var lastCameraFrameAt = 0L
+    private var cameraPreviewAspect = 16f / 9f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -161,14 +164,23 @@ class MainActivity : Activity() {
                     ?.getOutputSizes(SurfaceTexture::class.java) ?: return false
                 val size = sizes.filter { it.width <= 1280 && it.height <= 720 }
                     .maxByOrNull { it.width * it.height } ?: sizes.minBy { it.width * it.height }
+                cameraPreviewAspect = size.width.toFloat() / size.height
                 val thread = HandlerThread("OpenView-camera").also { it.start() }
                 cameraThread = thread
                 val handler = Handler(thread.looper)
                 val generation = ++cameraGeneration
-                cameraFrames.set(0); cameraAvailable.set(false)
+                cameraFrames.set(0); cameraAvailable.set(false); cameraFailed.set(false)
+                lastCameraFrameAt = android.os.SystemClock.elapsedRealtime()
                 val texture = SurfaceTexture(textureId).apply {
                     setDefaultBufferSize(size.width, size.height)
-                    setOnFrameAvailableListener({ cameraAvailable.set(true); cameraFrames.incrementAndGet() }, handler)
+                    setOnFrameAvailableListener({
+                        synchronized(cameraLock) {
+                            if (generation == cameraGeneration) {
+                                cameraAvailable.set(true); cameraFrames.incrementAndGet()
+                                lastCameraFrameAt = android.os.SystemClock.elapsedRealtime()
+                            }
+                        }
+                    }, handler)
                 }
                 cameraTexture = texture
                 val surface = Surface(texture)
@@ -191,16 +203,29 @@ class MainActivity : Activity() {
                                                 }
                                                 session.setRepeatingRequest(request.build(), null, handler)
                                                 Log.i(TAG, "camera streaming ${size.width}x${size.height}; monoscopic background")
-                                            } catch (e: Exception) { Log.e(TAG, "Camera request failed", e) }
+                                            } catch (e: Exception) {
+                                                cameraFailed.set(true); Log.e(TAG, "Camera request failed", e)
+                                            }
                                         }
                                     }
-                                    override fun onConfigureFailed(session: CameraCaptureSession) { Log.e(TAG, "Camera session configuration failed") }
+                                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                                        synchronized(cameraLock) {
+                                            if (generation == cameraGeneration) cameraFailed.set(true)
+                                        }
+                                        Log.e(TAG, "Camera session configuration failed")
+                                    }
                                 }, handler)
-                            } catch (e: Exception) { Log.e(TAG, "Camera session failed", e) }
+                            } catch (e: Exception) { cameraFailed.set(true); Log.e(TAG, "Camera session failed", e) }
                         }
                     }
-                    override fun onDisconnected(device: CameraDevice) { device.close(); Log.i(TAG, "camera disconnected") }
-                    override fun onError(device: CameraDevice, error: Int) { device.close(); Log.e(TAG, "camera error=$error") }
+                    override fun onDisconnected(device: CameraDevice) {
+                        synchronized(cameraLock) { if (generation == cameraGeneration) cameraFailed.set(true) }
+                        device.close(); Log.i(TAG, "camera disconnected")
+                    }
+                    override fun onError(device: CameraDevice, error: Int) {
+                        synchronized(cameraLock) { if (generation == cameraGeneration) cameraFailed.set(true) }
+                        device.close(); Log.e(TAG, "camera error=$error")
+                    }
                 }, handler)
                 return true
             } catch (e: Exception) {
@@ -211,8 +236,19 @@ class MainActivity : Activity() {
     }
 
     @Suppress("unused")
+    fun getCameraAspect(): Float = synchronized(cameraLock) { cameraPreviewAspect }
+
+    @Suppress("unused")
     fun updateCameraTexture(transform: FloatArray): Long {
         synchronized(cameraLock) {
+            // A frozen last frame must not masquerade as a live view of the surroundings.
+            if (cameraFailed.get() || android.os.SystemClock.elapsedRealtime() - lastCameraFrameAt > 3000) {
+                runOnUiThread {
+                    wantsCamera = false
+                    status.text = "La cámara dejó de enviar imágenes. Puedes seguir en el espacio y volver a activarla."
+                }
+                return -1
+            }
             if (cameraAvailable.getAndSet(false)) {
                 cameraTexture?.updateTexImage()
                 cameraTexture?.getTransformMatrix(transform)

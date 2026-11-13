@@ -119,7 +119,10 @@ android {
 
 androidComponents {
     onVariants(selector().withBuildType("debug")) {
-        packaging.jniLibs.keepDebugSymbols.add("**")
+        // Keep phone installs small. Opt in only when native debugging is needed.
+        if (project.hasProperty('keepNativeSymbols')) {
+            packaging.jniLibs.keepDebugSymbols.add("**")
+        }
     }
 }
 

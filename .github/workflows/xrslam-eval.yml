@@ -1,0 +1,89 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+name: xrslam-eval
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/mono/xrslam*
+      - .github/workflows/xrslam-eval.yml
+jobs:
+  monocular:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      XRSLAM_REVISION: 4beb1a942f33da9afbfae2d70e2c641cfc2bb675
+      DATASET_URL: https://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset/machine_hall/MH_01_easy/MH_01_easy.zip
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies and scoring tests
+        run: |
+          mkdir -p results
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build libopencv-dev libatlas-base-dev libssl-dev python3-numpy unzip
+          python3 tools/mono/xrslam_test.py
+      - name: Pinned upstream and minimal headless build adaptation
+        run: |
+          git init upstream
+          git -C upstream remote add origin https://github.com/openxrlab/xrslam.git
+          git -C upstream fetch --depth 1 origin "$XRSLAM_REVISION"
+          git -C upstream checkout --detach FETCH_HEAD
+          cp upstream/LICENSE results/XRSLAM-LICENSE.txt
+          git -C upstream rev-parse HEAD > results/revision.txt
+          python3 tools/mono/xrslam_prepare.py upstream
+          git -C upstream diff > results/build-adaptation.patch
+      - name: Configure and build core with headless harness
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          cmake -S upstream -B build-xrslam -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DXRSLAM_ENABLE_THREADING=OFF -DXRSLAM_ENABLE_DEBUG_INSPECTION=OFF \
+            -DOPENVIEW_HEADLESS_SOURCE="$PWD/tools/mono/xrslam_headless.cpp" 2>&1 | tee results/configure.log
+          cmake --build build-xrslam --target openview-xrslam-headless --parallel 2 2>&1 | tee results/build.log
+          for directory in build-xrslam/_deps/*-src; do
+            if [ -d "$directory/.git" ]; then
+              printf '%s ' "$directory" >> results/dependency-revisions.txt
+              git -C "$directory" rev-parse HEAD >> results/dependency-revisions.txt
+            fi
+          done
+      - name: Download EuRoC MH01 and keep cam0 + IMU only
+        timeout-minutes: 3
+        run: |
+          curl --fail --location --retry 2 --max-time 150 "$DATASET_URL" -o sequence.zip
+          sha256sum sequence.zip > results/dataset-sha256.txt
+          unzip -q sequence.zip 'mav0/cam0/*' 'mav0/imu0/*' 'mav0/state_groundtruth_estimate0/*' -d sequence
+      - name: Run and score monocular tracking
+        timeout-minutes: 6
+        run: |
+          set -o pipefail
+          python3 tools/mono/xrslam_eval.py --binary build-xrslam/openview-xrslam-headless \
+            --source upstream --sequence sequence/mav0 --output results/run --timeout 300 2>&1 | tee results/evaluation.log
+      - name: Publish measured status
+        if: always()
+        run: |
+          echo '## XRSLAM monocular experiment' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f results/run/results.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat results/run/results.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'No completed evaluation: inspect configure/build/download logs. This is not a tracking success.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Preserve dependency license metadata
+        if: always()
+        run: |
+          mkdir -p results/licenses
+          dpkg-query -W libopencv-dev libatlas-base-dev libssl-dev > results/system-dependencies.txt || true
+          for directory in build-xrslam/_deps/*-src; do
+            if [ -d "$directory" ]; then
+              name="$(basename "$directory")"
+              mkdir -p "results/licenses/$name"
+              find "$directory" -maxdepth 1 -type f \( -iname '*license*' -o -iname 'copying*' \) -exec cp {} "results/licenses/$name/" \;
+            fi
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xrslam-monocular-experiment
+          path: results/

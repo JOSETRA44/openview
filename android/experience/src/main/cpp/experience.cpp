@@ -86,7 +86,7 @@ struct Experience {
     jobject activity=nullptr;
     JavaVM *vm=nullptr;
     JNIEnv *env=nullptr;
-    jmethodID cameraCreate=nullptr,cameraUpdate=nullptr,cameraRelease=nullptr;
+    jmethodID cameraCreate=nullptr,cameraUpdate=nullptr,cameraRelease=nullptr,cameraAspectMethod=nullptr;
     jfloatArray cameraTransformArray=nullptr;
     XrInstance instance=XR_NULL_HANDLE;
     XrSession session=XR_NULL_HANDLE;
@@ -100,6 +100,7 @@ struct Experience {
     std::vector<Eye> eyes;
     GLuint sceneProgram=0,cameraProgram=0,vao=0,vbo=0,cameraTexture=0;
     Mat cameraTransform=identity();
+    float cameraAspect=16.f/9.f;
     std::vector<Vertex> grid,objects;
     uint64_t frames=0,cameraFrames=0;
 
@@ -111,8 +112,9 @@ struct Experience {
         cameraCreate=env->GetMethodID(cls,"createCameraTexture","(I)Z");
         cameraUpdate=env->GetMethodID(cls,"updateCameraTexture","([F)J");
         cameraRelease=env->GetMethodID(cls,"releaseCameraTexture","()V");
+        cameraAspectMethod=env->GetMethodID(cls,"getCameraAspect","()F");
         env->DeleteLocalRef(cls); javaCheck();
-        if(!cameraCreate||!cameraUpdate||!cameraRelease) throw std::runtime_error("Camera JNI contract missing");
+        if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod) throw std::runtime_error("Camera JNI contract missing");
         cameraTransformArray=env->NewFloatArray(16);
 
         PFN_xrInitializeLoaderKHR initialize=nullptr;
@@ -192,7 +194,7 @@ struct Experience {
             "#version 300 es\nlayout(location=0) in vec3 pos;layout(location=1) in vec3 color;uniform mat4 mvp;out vec3 c;void main(){c=color;gl_Position=mvp*vec4(pos,1.0);}",
             "#version 300 es\nprecision mediump float;in vec3 c;out vec4 outColor;void main(){outColor=vec4(c,1.0);}");
         cameraProgram=program(
-            "#version 300 es\nuniform mat4 transform;out vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);uv=(transform*vec4(p,0,1)).xy;gl_Position=vec4(p*2.0-1.0,0,1);}",
+            "#version 300 es\nuniform mat4 transform;uniform vec2 crop;out vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);vec2 sampleUV=vec2(0.5)+(p-vec2(0.5))*crop;uv=(transform*vec4(sampleUV,0,1)).xy;gl_Position=vec4(p*2.0-1.0,0,1);}",
             "#version 300 es\n#extension GL_OES_EGL_image_external_essl3 : require\nprecision mediump float;uniform samplerExternalOES image;in vec2 uv;out vec4 outColor;void main(){outColor=vec4(texture(image,uv).rgb,1.0);}");
         glGenVertexArrays(1,&vao); glGenBuffers(1,&vbo);
         glGenTextures(1,&cameraTexture); glBindTexture(GL_TEXTURE_EXTERNAL_OES,cameraTexture);
@@ -211,6 +213,10 @@ struct Experience {
     void updateCamera() {
         if(cameraWanted.load() && !cameraActive) {
             cameraActive=env->CallBooleanMethod(activity,cameraCreate,static_cast<jint>(cameraTexture)); javaCheck();
+            if(cameraActive) {
+                cameraAspect=env->CallFloatMethod(activity,cameraAspectMethod); javaCheck();
+                if(!std::isfinite(cameraAspect)||cameraAspect<=0) cameraAspect=16.f/9.f;
+            }
             if(!cameraActive) {
                 env->CallVoidMethod(activity,cameraRelease); javaCheck();
                 cameraWanted=false; INFO("Camera unavailable; falling back to space");
@@ -219,7 +225,13 @@ struct Experience {
             env->CallVoidMethod(activity,cameraRelease); javaCheck(); cameraActive=false; cameraFrames=0;
         }
         if(cameraActive) {
-            cameraFrames=env->CallLongMethod(activity,cameraUpdate,cameraTransformArray); javaCheck();
+            auto received=env->CallLongMethod(activity,cameraUpdate,cameraTransformArray); javaCheck();
+            if(received<0) {
+                env->CallVoidMethod(activity,cameraRelease); javaCheck();
+                cameraActive=false; cameraWanted=false; cameraFrames=0;
+                INFO("Camera lost or stalled; falling back to space"); return;
+            }
+            cameraFrames=static_cast<uint64_t>(received);
             if(cameraFrames) env->GetFloatArrayRegion(cameraTransformArray,0,16,cameraTransform.data());
         }
     }
@@ -235,8 +247,12 @@ struct Experience {
                     XR(xrBeginSession(session,&begin)); running=true; INFO("session READY");
                 } else if(state==XR_SESSION_STATE_STOPPING) {
                     INFO("session STOPPING"); if(running) XR(xrEndSession(session)); running=false;
-                } else if(state==XR_SESSION_STATE_EXITING || state==XR_SESSION_STATE_LOSS_PENDING) stop=true;
-            } else if(event.type==XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) stop=true;
+                } else if(state==XR_SESSION_STATE_EXITING || state==XR_SESSION_STATE_LOSS_PENDING) {
+                    if(!stop.load()) throw std::runtime_error("El runtime cerró la sesión. Vuelve a OpenView para entrar de nuevo.");
+                }
+            } else if(event.type==XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) {
+                if(!stop.load()) throw std::runtime_error("Se perdió el runtime XR. Vuelve a OpenView para entrar de nuevo.");
+            }
             event={XR_TYPE_EVENT_DATA_BUFFER};
         }
         if(result!=XR_EVENT_UNAVAILABLE) xrCheck(result,"xrPollEvent");
@@ -316,6 +332,12 @@ struct Experience {
                         glDisable(GL_DEPTH_TEST); glUseProgram(cameraProgram); glBindVertexArray(vao);
                         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_EXTERNAL_OES,cameraTexture);
                         glUniform1i(glGetUniformLocation(cameraProgram,"image"),0);
+                        // Center-crop the preview to each eye's viewport instead of stretching it.
+                        // SurfaceTexture's producer transform (including its vertical flip) follows the crop.
+                        const float eyeAspect=static_cast<float>(eye.width)/eye.height;
+                        const float cropX=std::min(1.f,eyeAspect/cameraAspect);
+                        const float cropY=std::min(1.f,cameraAspect/eyeAspect);
+                        glUniform2f(glGetUniformLocation(cameraProgram,"crop"),cropX,cropY);
                         glUniformMatrix4fv(glGetUniformLocation(cameraProgram,"transform"),1,GL_FALSE,cameraTransform.data());
                         glDrawArrays(GL_TRIANGLES,0,3);
                     }

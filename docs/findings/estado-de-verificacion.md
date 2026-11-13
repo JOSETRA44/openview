@@ -9,7 +9,7 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Build Linux de `libopenxr_openview.so` y `openview-service` | Verificado en CI (Ubuntu 24.04, GCC) |
 | Tests de Monado (`ctest`) con nuestra selección de módulos | Verificado en CI |
 | Cliente OpenXR → runtime → IPC → servicio | Verificado en CI: `openxr_runtime_list` crea la instancia (`xrCreateInstance`), obtiene el sistema (`xrGetSystem`) y el servicio registra `Client 1 connected`. Vulkan por software (lavapipe) sobre Xvfb |
-| Renderizado de frames (`hello_xr`) | No ejecutado |
+| Renderizado de frames (`hello_xr`) en Linux CI | No ejecutado; las pruebas Android se registran por separado |
 | El parche 0001 compila | Verificado en CI para arm64-v8a, armeabi-v7a, x86 y x86_64: `monado-service` de Android enlaza `drv_android` y el build termina sin errores. Su comportamiento en ejecución **no** está probado |
 | APK propio de OpenView (`dev.openview.runtime`, arm64-v8a y x86_64) | Verificado en CI; artefacto `openview-debug-apk`, firmado con una clave de depuración fija |
 | OpenView sirve a `hello_xr` en un teléfono de forma continua | Verificado en un Infinix X6885 (corridas de 60 y 90 s), con el permiso de superposición concedido. Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
@@ -19,11 +19,13 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Compositor enganchado al vsync (parche 0003) | Verificado en ese dispositivo a 60 Hz: 0.2 % de frames descartados, latencia 29–32 ms |
 | Grabadora de sensores (`tools/sensor-recorder`) | Verificada en ese dispositivo: cámara, IMU y reporte del dispositivo |
 | `analyze.py`: estadísticas y exportación EuRoC | Verificado con una captura real; estimadores probados con señales sintéticas |
-| Desfase cámara–IMU | No medido: falta una captura con giros |
+| Desfase cámara–IMU | Estimación preliminar en una captura con giros (145427); falta repetir con exposición fija. Ver informe del dispositivo |
 | Seguimiento 6DoF con Basalt y dos cámaras, en nuestro build | Verificado en CI con 4 secuencias públicas: 0.4–1.9 cm de error, 1.5–2.1× tiempo real. Ver [vio-evaluacion.md](vio-evaluacion.md) |
 | Basalt con una cámara | Verificado que **no** funciona: el backend lo rechaza al arrancar |
 | Backend de seguimiento para una cámara | Sin elegir, ver [ADR-0003](../adr/0003-seguimiento-6dof-con-una-camara.md) |
 | Calibración de la cámara del teléfono | No hecha |
+| Herramienta de calibración intrínseca | Implementada; 8 pruebas locales y CI `mono-tools` verificadas. Falta captura del tablero y calibración real |
+| Experiencia propia OpenView | En integración; estado detallado en [experiencia-integracion.md](experiencia-integracion.md) |
 | Evaluar una captura propia de teléfono | No ejecutado: falta calibración y backend |
 | Trayectoria de referencia para capturas propias (ARCore) | No implementado |
 | Efecto visual de la predicción, error angular, latencia percibida | No medido |
