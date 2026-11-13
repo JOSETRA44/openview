@@ -24,7 +24,8 @@ Datos: Monado SLAM Datasets (Collabora, CC-BY-4.0), visor Samsung Odyssey+, dos 
 | MOO11 ida y vuelta | 13.4 s | 7.3 m | 1.90 cm | 0.26 % | 2.1× |
 | MOO07 mapeo fácil | 41.1 s | 15.8 m | 1.33 cm | 0.08 % | 2.1× |
 
-Todas con el 100 % de los frames seguidos.
+Todas con el 99–100 % de la secuencia seguida, y resultados idénticos entre dos ejecuciones
+(Basalt en modo determinista).
 
 Qué establece:
 
