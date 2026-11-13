@@ -49,6 +49,15 @@ Consecuencias:
 | T1 | VIO abierto detrás de VIT | Por construir; es el aporte central del proyecto |
 | — | ARCore | Solo backend opcional y aislado: referencia para medir T1 y respaldo |
 
+La experiencia propia Android (`android/experience`) es un cliente OpenXR independiente,
+abierto desde `android/app/HomeActivity`. Usa orientación del runtime y puede componer
+vídeo Camera2 con geometría virtual. No incorpora un estimador paralelo de pose. Ver
+[ADR-0004](../adr/0004-experiencia-openxr-independiente.md).
+
+T1 tiene ahora dos evidencias offline: Basalt estéreo por VIT y XRSLAM monocular+IMU por
+su API pública (5.18 cm ATE RMSE en una secuencia EuRoC). El adaptador XRSLAM→VIT,
+la calibración real y la integración cámara/IMU del teléfono siguen pendientes.
+
 ## Relación con Monado
 
 Monado se fija por commit en un submódulo. Los cambios que necesitamos sobre Monado viven en

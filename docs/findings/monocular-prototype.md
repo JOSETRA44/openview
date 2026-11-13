@@ -48,15 +48,18 @@ y `time_offset`. Sus [instrucciones](https://github.com/openxrlab/xrslam/blob/ma
 documentan reproducción EuRoC y salida TUM; esto permite plantear un experimento
 comparable sin integrar todavía código en OpenView.
 
-**No verificado:** build propio, calidad monocular, consumo ARM/Android, efecto
+**Actualización posterior, verificada:** ya se compiló y ejecutó el experimento
+monocular+IMU V1_01_easy en CI, ATE RMSE 5.18 cm y cobertura 96.97 %, sin ajustar escala.
+Código, configuración, datos y límites en [el experimento](../../tools/mono/xrslam-experiment.md).
+
+**No verificado:** consumo ARM/Android, efecto
 real de esos campos de rolling shutter y desfase, adaptación a VIT, ni todas las
 licencias transitivas. Que existan campos de configuración no demuestra que el
 algoritmo compense correctamente el sensor del Infinix. No se copió código de
 XRSLAM ni se eligió todavía como dependencia del producto.
 
-Siguiente experimento: fijar revisión de XRSLAM, auditar las dependencias mínimas,
-ejecutar EuRoC monocular con referencia y contrastar error sin ajustar escala y
-cobertura; solo después construir el adaptador VIT. En paralelo se necesita una
+Siguiente paso: repetir y ampliar secuencias, completar la revisión de dependencias
+y construir el adaptador VIT experimental. En paralelo se necesita una
 captura física del tablero para usar el calibrador ya implementado.
 
 Referencia del método de calibración:

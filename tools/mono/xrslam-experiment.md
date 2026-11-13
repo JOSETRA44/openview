@@ -64,7 +64,40 @@ legacy `robotics.ethz.ch` no respondió. El editor ahora distribuye un archivo
 Machine Hall de aproximadamente 12 GB, según las
 [instrucciones actualizadas de NVIDIA](https://github.com/nvidia-isaac/cuVSLAM/blob/main/examples/euroc/README.md).
 Se cambió a V1_01_easy (1.15 GB) desde la réplica fijada para poder ejecutar el
-experimento acotado. La ejecución del tracker queda pendiente de la nueva corrida.
+experimento acotado.
+
+## Primer resultado monocular medido
+
+**Verificado en CI:** [corrida 43356408254](https://github.com/JOSETRA44/openview/actions/runs/43356408254),
+commit OpenView `2d0bf9feeddd50525020c94598a220823afb5bec`, Ubuntu 22.04.
+Build, checksum del dataset, reproducción y evaluación terminaron correctamente.
+Se alimentó **una sola cámara (cam0) y el IMU**; cam1 ni siquiera se extrajo.
+
+| Magnitud | Resultado |
+|---|---|
+| Secuencia | EuRoC V1_01_easy |
+| ATE RMSE sin ajuste de escala | **5.18 cm** |
+| ATE mediana / máximo | 4.16 / 12.28 cm |
+| Recorrido evaluado | 58.53 m |
+| ATE / recorrido | 0.0885 % |
+| Cobertura temporal respecto a referencia | 96.97 % |
+| Mayor intervalo entre poses | 50.0004 ms |
+| Poses dentro del intervalo de referencia | 2785 |
+| Poses emitidas / imágenes procesadas | 2805 / 2912 |
+| Tiempo total de reproducción y proceso | 66.23 s |
+| Escala de alineación | 1.0, fija |
+
+La diferencia entre poses emitidas y evaluadas corresponde a los timestamps que
+quedan fuera del intervalo de ground truth. Se conservaron `trajectory.tum`,
+`tracker.log`, `results.json`, checksums y revisiones de dependencias en el
+artefacto `xrslam-monocular-experiment`. Copia local de esta corrida:
+`build/xrslam-evidence/` (ignorada por Git).
+
+Esto demuestra que existe un candidato abierto capaz de producir una trayectoria
+monocular inercial métrica en nuestro experimento. Es una sola corrida, una sola
+secuencia de obturador global, en CPU de CI; no establece repetibilidad,
+compensación rolling shutter, rendimiento térmico/Android ni funcionamiento
+con la cámara del Infinix. No está integrado por VIT ni incluido en los APK.
 
 ## Fuentes y límites
 

@@ -34,10 +34,11 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 | B. OKVIS2 (BSD-3) | Calibración online opcional | Sus desarrolladores declaran no soportado monocular ni monocular+IMU por la inicialización de puntos | Sin ejecutar; descartado como integración directa soportada |
 | C. Filtro propio tipo MSCKF | Una cámara es su caso natural (no necesita profundidad inicial); el rolling shutter y el desfase temporal entran como estados; código propio y permisivo | Es el trabajo más grande; las implementaciones de referencia son GPL y solo se pueden usar como literatura | Sin empezar |
 | D. Exigir dos cámaras traseras como par estéreo | Usaría Basalt tal cual | Android no garantiza abrir dos cámaras a la vez, y el teléfono de referencia no las agrupa; base de dispositivos reducida | Descartada como requisito general |
+| E. XRSLAM (código principal Apache-2.0) | Inicializa monocular+IMU; experimento propio V1_01_easy con 5.18 cm ATE y 96.97 % de cobertura | Falta adaptador VIT, build Android, evaluación rolling shutter y dependencias transitivas | Candidato siguiente; probado offline, no elegido aún para el producto |
 
 ## Qué falta para decidir
 
-1. Evaluar un candidato que contemple monocular+IMU: XRSLAM merece un experimento fijado por revisión, sin adoptarlo aún. OKVIS2 no es ya el supuesto camino corto.
+1. Ampliar y repetir la evaluación XRSLAM monocular+IMU; el primer experimento fijado por revisión ya pasó. Adaptarlo a VIT y medir Android si supera las siguientes pruebas. OKVIS2 no es ya el supuesto camino corto.
 2. Leer cómo Basalt crea puntos nuevos, para estimar el tamaño real de la opción A.
 3. Una secuencia pública con rolling shutter y referencia, para medir cuánto degrada a un
    backend que lo ignora.

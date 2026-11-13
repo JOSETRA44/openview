@@ -17,3 +17,5 @@ Archivos:
 - [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) — mediciones en un teléfono real
 - [vio-evaluacion.md](vio-evaluacion.md) — resultados de seguimiento 6DoF sobre datasets
 - [estado-de-verificacion.md](estado-de-verificacion.md) — qué se ha ejecutado y qué no
+- [experiencia-integracion.md](experiencia-integracion.md) — experiencia propia, pruebas de teléfono y fallos corregidos
+- [monocular-prototype.md](monocular-prototype.md) — calibración y avance monocular XRSLAM

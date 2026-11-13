@@ -42,8 +42,14 @@ def main():
     pid = adb("shell", "pidof", package).strip()
     if not pid.isdigit():
         raise RuntimeError("Experience has no single live process after launch")
-    time.sleep(args.seconds)
-    logs = adb("logcat", "-d", "--pid=" + pid, "-v", "threadtime")
+    log_lines = {}
+    remaining = args.seconds
+    while remaining > 0:
+        interval = min(5, remaining)
+        time.sleep(interval)
+        log_lines.update(dict.fromkeys(adb("logcat", "-d", "--pid=" + pid, "-v", "threadtime").splitlines()))
+        remaining -= interval
+    logs = "\n".join(log_lines)
     (args.output / "logcat.txt").write_text(logs, encoding="utf-8")
     (args.output / "screen.png").write_bytes(adb("exec-out", "screencap", "-p", binary=True))
     samples = [(int(f), int(c), m) for f, c, m in
@@ -53,7 +59,7 @@ def main():
     camera_live = args.mode != "camera" or (
         len(matching) >= 5 and matching[-1][1] - matching[0][1] >= 30)
     errors = [line for line in logs.splitlines()
-              if "FATAL EXCEPTION" in line or re.search(r" E OpenViewXR\s*:", line)]
+              if "FATAL EXCEPTION" in line or "Fatal signal" in line or re.search(r" E OpenViewXR\s*:", line)]
     result = {
         "mode": args.mode, "seconds": args.seconds, "pid": pid,
         "session_ready": "session READY" in logs, "sustained_rendering": sustained,

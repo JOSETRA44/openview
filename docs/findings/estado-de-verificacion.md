@@ -25,7 +25,8 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Backend de seguimiento para una cámara | Sin elegir, ver [ADR-0003](../adr/0003-seguimiento-6dof-con-una-camara.md) |
 | Calibración de la cámara del teléfono | No hecha |
 | Herramienta de calibración intrínseca | Implementada; 8 pruebas locales y CI `mono-tools` verificadas. Falta captura del tablero y calibración real |
-| Experiencia propia OpenView | En integración; estado detallado en [experiencia-integracion.md](experiencia-integracion.md) |
+| Experiencia propia OpenView | Build CI e instalación verificados; entrada propia, escena estéreo, cámara con objetos y ciclo de vida probados en Infinix. Ver [experiencia-integracion.md](experiencia-integracion.md) |
+| XRSLAM monocular + IMU | Ejecutado offline en CI: V1_01_easy, ATE RMSE 5.18 cm, cobertura 96.97 %, sin ajustar escala. Una corrida; sin integración Android/VIT. Ver [experimento](../../tools/mono/xrslam-experiment.md) |
 | Evaluar una captura propia de teléfono | No ejecutado: falta calibración y backend |
 | Trayectoria de referencia para capturas propias (ARCore) | No implementado |
 | Efecto visual de la predicción, error angular, latencia percibida | No medido |
