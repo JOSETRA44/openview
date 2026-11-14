@@ -15,7 +15,9 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | OpenView sirve a `hello_xr` en un teléfono de forma continua | Verificado en un Infinix X6885 (corridas de 60 y 90 s), con el permiso de superposición concedido. Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
 | Aviso cuando falta el permiso de superposición | Verificado en ese dispositivo |
 | Predicción de pose: conversión de reloj y límite | Verificado en ese dispositivo: 0 de 6060 consultas recortadas |
-| Modelo de latencia de pantalla (parche 0002) | Verificado en ese dispositivo a 60 Hz; sin probar a 90/120/144 Hz |
+| Modelo de latencia de pantalla (parche 0002) | Verificado en ese dispositivo a 60 y 90 Hz (1.7–1.9 periodos medidos); 120/144 Hz sin medir: el teléfono no los concede |
+| El runtime conoce la tasa de refresco real | **Defecto**: la lee al arrancar y no pide ninguna; medido un desajuste (supone 90 Hz, panel a 60). Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
+| Temporización con la app propia `experience` | Verificado a 60 Hz, espacio y cámara: 0.1–1.8 % descartados, 28–29 ms |
 | Compositor enganchado al vsync (parche 0003) | Verificado en ese dispositivo a 60 Hz: 0.2 % de frames descartados, latencia 29–32 ms |
 | Grabadora de sensores (`tools/sensor-recorder`) | Verificada en ese dispositivo: cámara, IMU y reporte del dispositivo |
 | `analyze.py`: estadísticas y exportación EuRoC | Verificado con una captura real; estimadores probados con señales sintéticas |
