@@ -41,7 +41,7 @@ jobs:
         run: |
           curl -sSL -o opencv.zip "$OPENCV_URL"
           unzip -q opencv.zip
-          ls opencv-4.12.0-android-sdk/sdk/native/jni/OpenCVConfig.cmake
+          ls OpenCV-android-sdk/sdk/native/jni/abi-arm64-v8a/OpenCVConfig.cmake
 
       - name: Build oneTBB and fmt for Android
         run: |
@@ -79,7 +79,7 @@ jobs:
             -DBASALT_BUILD_SHARED_LIBRARY_ONLY=ON \
             -DBASALT_BUILD_VISUALIZATION=OFF \
             -DEIGEN_ROOT=/usr/include/eigen3 \
-            -DOpenCV_DIR="$PWD/opencv-4.12.0-android-sdk/sdk/native/jni" \
+            -DOpenCV_DIR="$PWD/OpenCV-android-sdk/sdk/native/jni/abi-arm64-v8a" \
             -DCMAKE_PREFIX_PATH="$PWD/deps"
           cmake --build build-basalt --target basalt -j4
           find build-basalt -name "libbasalt.so*" -exec file {} \;
