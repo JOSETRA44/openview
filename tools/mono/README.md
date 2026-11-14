@@ -13,6 +13,13 @@ python3 tools/mono/test_calibrate.py
 
 ## Captura y uso
 
+Para la grabadora con controles verificables, seguir la
+[captura guiada](CAPTURA-GUIADA.md). `capture_session.py` automatiza una grabación
+acotada, descarga y comprobación; `capture_quality.py` valida una carpeta existente.
+Usar `calibrate.py --require-fixed-controls` para excluir el calentamiento automático
+y rechazar capturas sin evidencia de exposición y enfoque fijos. El modo antiguo
+sin esa opción sigue disponible para imágenes externas y pruebas sintéticas.
+
 ```sh
 python3 tools/mono/calibrate.py board.svg --board --square-mm 15
 python3 tools/mono/calibrate.py /ruta/captura --square-mm 15 --stride 10 --output calibration.json

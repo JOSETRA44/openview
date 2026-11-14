@@ -6,6 +6,7 @@ package dev.openview.recorder
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
+import android.graphics.Bitmap
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -30,6 +31,8 @@ import java.io.BufferedWriter
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicInteger
+import org.json.JSONObject
+import kotlin.math.abs
 
 /**
  * Records one camera and the IMU, each sample with the timestamp the platform
@@ -42,10 +45,27 @@ import java.util.concurrent.atomic.AtomicInteger
  * - `frames.csv`: per frame timestamp, exposure, rolling shutter skew, arrival time.
  * - `gyro.csv`, `accel.csv`: raw events, one per line.
  */
-class Recording(private val context: Context, private val dir: File, private val cameraId: String) {
+class Recording(
+    private val context: Context,
+    private val dir: File,
+    private val cameraId: String,
+    private val settings: CaptureSettings = CaptureSettings(),
+    private val onPreview: ((Bitmap) -> Unit)? = null,
+) {
     val frameCount = AtomicInteger()
     val gyroCount = AtomicInteger()
     val accelCount = AtomicInteger()
+    val verifiedCount = AtomicInteger()
+    @Volatile var controlStatus = "warming_up"
+        private set
+    @Volatile var actualControls = ""
+        private set
+    @Volatile private var stopping = false
+    private var lastPreviewNs = 0L
+    private var lockedExposureNs = 0L
+    private var lockedIso = 0
+    private var firstVerifiedTimestampNs: Long? = null
+    private var consecutiveVerified = 0
 
     private val cameraThread = HandlerThread("camera").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
@@ -85,6 +105,18 @@ class Recording(private val context: Context, private val dir: File, private val
         }
 
     fun start() {
+        val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+        val capabilities = characteristics.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+        require(capabilities?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true) {
+            "Camera does not support manual sensor controls"
+        }
+        val exposureRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
+        require(exposureRange?.contains(settings.exposureNs) == true) { "Exposure outside camera range: $exposureRange" }
+        val isoRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        require(settings.iso == 0 || isoRange?.contains(settings.iso) == true) { "ISO outside camera range: $isoRange" }
+        val minFocus = characteristics.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        require(settings.focusDiopters <= minFocus) { "Focus must be 0–$minFocus diopters" }
+        writeCaptureReport()
         // Uncalibrated would skip the platform's bias removal, but not every
         // device has those sensors; the calibrated ones are what the runtime uses.
         for (type in intArrayOf(Sensor.TYPE_GYROSCOPE, Sensor.TYPE_ACCELEROMETER)) {
@@ -100,6 +132,7 @@ class Recording(private val context: Context, private val dir: File, private val
     }
 
     fun stop() {
+        stopping = true
         sensorManager.unregisterListener(sensorListener)
         session?.close()
         camera?.close()
@@ -111,6 +144,7 @@ class Recording(private val context: Context, private val dir: File, private val
         framesCsv.close()
         gyroCsv.close()
         accelCsv.close()
+        writeCaptureReport()
     }
 
     @SuppressLint("MissingPermission") // The activity only starts a recording once granted.
@@ -126,16 +160,29 @@ class Recording(private val context: Context, private val dir: File, private val
         val pendingImages = HashMap<Long, Long>()
 
         fun writeRow(timestampNs: Long, resultFields: String, arrivalNs: Long) {
-            framesCsv.write("$timestampNs,$resultFields,$arrivalNs\n")
+            val fields = resultFields.split(',')
+            framesCsv.write("$timestampNs,${fields.take(5).joinToString(",")},$arrivalNs,${fields.drop(5).joinToString(",")}\n")
         }
 
         imageReader.setOnImageAvailableListener(
             { r ->
                 val image = r.acquireNextImage() ?: return@setOnImageAvailableListener
+                if (stopping) { image.close(); return@setOnImageAvailableListener }
                 val arrivalNs = System.nanoTime()
                 val timestampNs = image.timestamp
-                writePgm(File(framesDir, "$timestampNs.pgm"), image)
-                image.close()
+                try {
+                    writePgm(File(framesDir, "$timestampNs.pgm"), image)
+                    if (onPreview != null && arrivalNs - lastPreviewNs > 500_000_000L) {
+                        lastPreviewNs = arrivalNs
+                        val plane = image.planes[0]
+                        val pixels = IntArray(image.width * image.height)
+                        for (y in 0 until image.height) for (x in 0 until image.width) {
+                            val luma = plane.buffer.get(y * plane.rowStride + x * plane.pixelStride).toInt() and 255
+                            pixels[y * image.width + x] = (255 shl 24) or (luma shl 16) or (luma shl 8) or luma
+                        }
+                        onPreview.invoke(Bitmap.createBitmap(pixels, image.width, image.height, Bitmap.Config.ARGB_8888))
+                    }
+                } finally { image.close() }
                 frameCount.incrementAndGet()
 
                 val fields = pendingResults.remove(timestampNs)
@@ -156,7 +203,9 @@ class Recording(private val context: Context, private val dir: File, private val
                     result: TotalCaptureResult,
                 ) {
                     val timestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: return
+                    if (stopping) return
                     lockShortExposure(result)
+                    val verified = verifyControls(result)
                     val fields =
                         listOf(
                                 result.get(CaptureResult.SENSOR_EXPOSURE_TIME),
@@ -164,6 +213,10 @@ class Recording(private val context: Context, private val dir: File, private val
                                 result.get(CaptureResult.SENSOR_FRAME_DURATION),
                                 result.get(CaptureResult.SENSOR_SENSITIVITY),
                                 result.get(CaptureResult.LENS_FOCUS_DISTANCE),
+                                result.get(CaptureResult.CONTROL_AE_MODE),
+                                result.get(CaptureResult.CONTROL_AF_MODE),
+                                result.get(CaptureResult.CONTROL_AE_STATE),
+                                if (verified) 1 else 0,
                             )
                             .joinToString(",") { it?.toString() ?: "" }
 
@@ -180,6 +233,7 @@ class Recording(private val context: Context, private val dir: File, private val
             cameraId,
             object : CameraDevice.StateCallback() {
                 override fun onOpened(device: CameraDevice) {
+                    if (stopping) { device.close(); return }
                     camera = device
                     val request =
                         device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
@@ -197,7 +251,7 @@ class Recording(private val context: Context, private val dir: File, private val
                                 CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF,
                             )
                             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
-                            set(CaptureRequest.LENS_FOCUS_DISTANCE, 0.0f)
+                            set(CaptureRequest.LENS_FOCUS_DISTANCE, settings.focusDiopters)
                         }
 
                     requestBuilder = request
@@ -209,11 +263,13 @@ class Recording(private val context: Context, private val dir: File, private val
                             { command -> cameraHandler.post(command) },
                             object : CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(s: CameraCaptureSession) {
+                                    if (stopping) { s.close(); return }
                                     session = s
                                     s.setRepeatingRequest(request.build(), captureCallback, cameraHandler)
                                 }
 
                                 override fun onConfigureFailed(s: CameraCaptureSession) {
+                                    controlStatus = "session_failed"
                                     Log.e(TAG, "Camera session configuration failed")
                                 }
                             },
@@ -224,6 +280,7 @@ class Recording(private val context: Context, private val dir: File, private val
                 override fun onDisconnected(device: CameraDevice) = device.close()
 
                 override fun onError(device: CameraDevice, error: Int) {
+                    controlStatus = "camera_error_$error"
                     Log.e(TAG, "Camera error $error")
                     device.close()
                 }
@@ -242,6 +299,9 @@ class Recording(private val context: Context, private val dir: File, private val
         if (exposureLocked || ++autoExposureResults < AUTO_EXPOSURE_FRAMES) {
             return
         }
+        val aeState = result.get(CaptureResult.CONTROL_AE_STATE)
+        if (settings.iso == 0 && aeState != CaptureResult.CONTROL_AE_STATE_CONVERGED &&
+            aeState != CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED && autoExposureResults < 150) return
         val exposureNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME) ?: return
         val iso = result.get(CaptureResult.SENSOR_SENSITIVITY) ?: return
         val builder = requestBuilder ?: return
@@ -251,16 +311,53 @@ class Recording(private val context: Context, private val dir: File, private val
                 .get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) ?: return
         exposureLocked = true
 
-        val lockedExposureNs = minOf(exposureNs, MAX_EXPOSURE_NS)
+        lockedExposureNs = settings.exposureNs
         // If the gain runs out the frames come out darker, which is still better than blurred.
-        val lockedIso = (iso * exposureNs / lockedExposureNs).coerceIn(isoRange.lower.toLong(), isoRange.upper.toLong())
+        lockedIso = if (settings.iso != 0) settings.iso else
+            (iso * exposureNs / lockedExposureNs).coerceIn(isoRange.lower.toLong(), isoRange.upper.toLong()).toInt()
 
         builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
         builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, lockedExposureNs)
-        builder.set(CaptureRequest.SENSOR_SENSITIVITY, lockedIso.toInt())
+        builder.set(CaptureRequest.SENSOR_SENSITIVITY, lockedIso)
         builder.set(CaptureRequest.SENSOR_FRAME_DURATION, FRAME_DURATION_NS)
         session?.setRepeatingRequest(builder.build(), captureCallback, cameraHandler)
+        controlStatus = "waiting_for_manual_results"
         Log.i(TAG, "Exposure locked: $exposureNs ns iso $iso -> $lockedExposureNs ns iso $lockedIso")
+    }
+
+    private fun verifyControls(result: TotalCaptureResult): Boolean {
+        val exposure = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+        val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+        val focus = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+        actualControls = "${exposure?.div(1e6)} ms · ISO $iso · $focus D"
+        // Sensor line timing can quantize exposure. This validates reported controls,
+        // not sharpness, photometric calibration or physical focus accuracy.
+        val verified = exposureLocked && exposure != null && iso != null && focus != null &&
+            result.get(CaptureResult.CONTROL_AE_MODE) == CaptureResult.CONTROL_AE_MODE_OFF &&
+            result.get(CaptureResult.CONTROL_AF_MODE) == CaptureResult.CONTROL_AF_MODE_OFF &&
+            abs(exposure - lockedExposureNs) <= maxOf(100_000L, lockedExposureNs / 20) &&
+            abs(iso - lockedIso) <= maxOf(1, lockedIso / 20) &&
+            abs(focus - settings.focusDiopters) <= 0.02f &&
+            result.get(CaptureResult.LENS_STATE) != CaptureResult.LENS_STATE_MOVING
+        consecutiveVerified = if (verified) consecutiveVerified + 1 else 0
+        if (exposureLocked) controlStatus = if (consecutiveVerified >= 5) "verified" else "waiting_for_manual_results"
+        if (verified) {
+            verifiedCount.incrementAndGet()
+            if (firstVerifiedTimestampNs == null) firstVerifiedTimestampNs = result.get(CaptureResult.SENSOR_TIMESTAMP)
+        }
+        return verified
+    }
+
+    private fun writeCaptureReport() {
+        File(dir, "capture.json").writeText(JSONObject()
+            .put("schema_version", 1).put("camera_id", cameraId)
+            .put("width", FRAME_SIZE.width).put("height", FRAME_SIZE.height)
+            .put("requested_exposure_ns", settings.exposureNs)
+            .put("requested_iso", settings.iso).put("requested_focus_diopters", settings.focusDiopters.toDouble())
+            .put("locked_exposure_ns", lockedExposureNs).put("locked_iso", lockedIso)
+            .put("control_status", controlStatus).put("verified_results", verifiedCount.get())
+            .put("first_verified_timestamp_ns", firstVerifiedTimestampNs ?: JSONObject.NULL)
+            .put("frames_saved", frameCount.get()).put("complete", stopping).toString(2))
     }
 
     /** PGM because it is the luma plane plus a header: lossless and no encoder in the capture path. */
@@ -295,7 +392,7 @@ class Recording(private val context: Context, private val dir: File, private val
         // Units: nanoseconds, except iso and focus distance (diopters).
         const val FRAMES_HEADER =
             "sensor_timestamp_ns,exposure_ns,rolling_shutter_skew_ns,frame_duration_ns,iso," +
-                "focus_distance_diopters,arrival_monotonic_ns\n"
+                "focus_distance_diopters,arrival_monotonic_ns,ae_mode,af_mode,ae_state,control_verified\n"
         const val IMU_HEADER = "timestamp_ns,x,y,z\n"
 
         fun backCameraId(manager: CameraManager): String? =

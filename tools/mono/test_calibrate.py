@@ -29,6 +29,28 @@ def synthetic_views(noise=.08):
 
 
 class CalibrationTests(unittest.TestCase):
+    def test_strict_capture_rejects_legacy_metadata_and_replaces_old_report(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "DONE").touch()
+            (root / "frames.csv").write_text("sensor_timestamp_ns,exposure_ns\n123,5000000\n")
+            output = root / "result.json"
+            output.write_text('{"status":"accepted_intrinsics_only","intrinsics":{"fx":500}}')
+            self.assertEqual(main([str(root), "--require-fixed-controls", "--output", str(output)]), 2)
+            report = json.loads(output.read_text())
+            self.assertEqual(report["status"], "rejected")
+            self.assertNotIn("intrinsics", report)
+
+    def test_scan_excludes_unverified_images_before_sampling(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # An unreadable warmup image must not contaminate selected fixed-control input.
+            (root / "0.pgm").write_bytes(b"invalid warmup")
+            cv2.imwrite(str(root / "1.pgm"), np.zeros((480, 640), np.uint8))
+            _, size, report = scan_images(root, 8, 6, allowed_files={"1.pgm"})
+            self.assertEqual(size, (640, 480))
+            self.assertEqual(report["sampled_images"], 1)
+
     def test_recovers_known_intrinsics_without_fitting_holdout(self):
         matrix, points = synthetic_views()
         result = calibration_report(points, (640, 480))

@@ -19,6 +19,7 @@
 #include <thread>
 #include <vector>
 #include "camera_uv.h"
+#include "gaze_interaction.h"
 
 #define INFO(...) __android_log_print(ANDROID_LOG_INFO, "OpenViewXR", __VA_ARGS__)
 #define ERROR(...) __android_log_print(ANDROID_LOG_ERROR, "OpenViewXR", __VA_ARGS__)
@@ -83,7 +84,7 @@ struct Eye {
 };
 
 struct Experience {
-    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true};
+    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true}, activate{false};
     jobject activity=nullptr;
     JavaVM *vm=nullptr;
     JNIEnv *env=nullptr;
@@ -93,7 +94,7 @@ struct Experience {
     XrSession session=XR_NULL_HANDLE;
     XrSpace local=XR_NULL_HANDLE,base=XR_NULL_HANDLE,head=XR_NULL_HANDLE;
     XrSystemId system=XR_NULL_SYSTEM_ID;
-    bool running=false, cameraActive=false;
+    bool running=false, cameraActive=false, focused=false;
     EGLDisplay display=EGL_NO_DISPLAY;
     EGLContext context=EGL_NO_CONTEXT;
     EGLSurface surface=EGL_NO_SURFACE;
@@ -103,7 +104,14 @@ struct Experience {
     Mat cameraTransform=identity();
     float cameraAspect=16.f/9.f;
     int cameraDisplayDegrees=0;
-    std::vector<Vertex> grid,objects;
+    std::vector<Vertex> grid,objects,reticle;
+    openview::GazeDwell gaze;
+    std::array<bool,3> objectPaused{};
+    std::array<float,3> objectAngles{{0,1,2}};
+    Mat gazePose=identity();
+    bool gazeValid=false;
+    float gazeDistance=2.5f;
+    double lastAnimationTime=0;
     uint64_t frames=0,cameraFrames=0;
 
     void javaCheck() {
@@ -245,6 +253,7 @@ struct Experience {
         while((result=xrPollEvent(instance,&event))==XR_SUCCESS) {
             if(event.type==XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
                 auto state=reinterpret_cast<XrEventDataSessionStateChanged*>(&event)->state;
+                focused=state==XR_SESSION_STATE_FOCUSED;
                 INFO("session state=%d",state);
                 if(state==XR_SESSION_STATE_READY && !running && !stop) {
                     XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO}; begin.primaryViewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -271,7 +280,7 @@ struct Experience {
         ci.poseInReferenceSpace.orientation={0,std::sin(yaw/2),0,std::cos(yaw/2)};
         if(location.locationFlags&XR_SPACE_LOCATION_POSITION_VALID_BIT) ci.poseInReferenceSpace.position=location.pose.position;
         XrSpace next=XR_NULL_HANDLE; XR(xrCreateReferenceSpace(session,&ci,&next));
-        xrDestroySpace(local); local=next; INFO("view recentered");
+        xrDestroySpace(local); local=next; gaze.reset(); INFO("view recentered");
     }
     void drawVertices(const std::vector<Vertex> &vertices, GLenum primitive, const Mat &mvp) {
         glUseProgram(sceneProgram); glUniformMatrix4fv(glGetUniformLocation(sceneProgram,"mvp"),1,GL_FALSE,mvp.data());
@@ -282,18 +291,66 @@ struct Experience {
         glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(3*sizeof(float)));
         glDrawArrays(primitive,0,static_cast<GLsizei>(vertices.size()));
     }
+    openview::GazeVector objectCenter(int object, double seconds) const {
+        return {(object-1)*1.4f,-.1f+.12f*std::sin(float(seconds)*.6f+object),-3.f};
+    }
+    void updateInteraction(XrTime time, double seconds) {
+        const bool trigger=activate.exchange(false);
+        XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+        XR(xrLocateSpace(head,local,time,&location));
+        gazeValid=focused && (location.locationFlags&XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+        if(!gazeValid) { gaze.reset(); reticle.clear(); return; }
+        if(!(location.locationFlags&XR_SPACE_LOCATION_POSITION_VALID_BIT)) location.pose.position={0,0,0};
+        // The runtime supplies this pose. In 3DoF it has no measured translation;
+        // this interaction does not add or infer a physical position.
+        gazePose=poseMatrix(location.pose);
+        openview::GazeVector origin{gazePose[12],gazePose[13],gazePose[14]};
+        openview::GazeVector direction{-gazePose[8],-gazePose[9],-gazePose[10]};
+        int hit=-1; float nearest=20.f;
+        for(int i=0;i<3;++i) {
+            const float distance=openview::raySphere(origin,direction,objectCenter(i,seconds),.58f);
+            if(distance<nearest) { nearest=distance; hit=i; }
+        }
+        if(hit!=gaze.target) INFO("gaze target=%d",hit);
+        if(gaze.update(hit,seconds,trigger)) {
+            objectPaused[hit]=!objectPaused[hit];
+            INFO("interaction object=%d state=%s source=%s",hit,objectPaused[hit]?"paused":"rotating",trigger?"tap":"dwell");
+        }
+        gazeDistance=hit>=0?nearest:2.5f;
+        reticle.clear();
+        const float inner=.008f*gazeDistance,outer=.012f*gazeDistance;
+        for(int i=0;i<48;++i) {
+            const float a=i*2*PI/48,b=(i+1)*2*PI/48;
+            const bool filled=hit>=0 && float(i)/48<gaze.progress;
+            const float r=filled?.98f:hit>=0?.35f:.75f;
+            const float g=filled?.74f:hit>=0?.95f:.85f;
+            const float blue=filled?.30f:hit>=0?.76f:.88f;
+            for(auto p:std::array<std::array<float,2>,6>{{{inner*std::cos(a),inner*std::sin(a)},
+                {outer*std::cos(a),outer*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
+                {inner*std::cos(a),inner*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
+                {inner*std::cos(b),inner*std::sin(b)}}})
+                reticle.push_back({p[0],p[1],-gazeDistance,r,g,blue});
+        }
+    }
     void makeObjects(double seconds) {
         objects.clear();
+        const float elapsed=lastAnimationTime>0?float(std::clamp(seconds-lastAnimationTime,0.,.1)):0;
+        lastAnimationTime=seconds;
         // Three floating sculptures and a far ring form a recognizable OpenView space.
         for(int object=0;object<3;++object) {
-            const float a=float(seconds)*.25f+object, c=std::cos(a),s=std::sin(a);
-            const float cx=(object-1)*1.4f, cy=-.1f+.12f*std::sin(float(seconds)*.6f+object), cz=-3.0f;
+            if(!objectPaused[object]) objectAngles[object]+=elapsed*.25f;
+            const float a=objectAngles[object], c=std::cos(a),s=std::sin(a);
+            const auto center=objectCenter(object,seconds);
+            const float cx=center.x,cy=center.y,cz=center.z;
             const float points[6][3]={{0,.55f,0},{.45f,0,0},{0,0,.45f},{-.45f,0,0},{0,0,-.45f},{0,-.55f,0}};
             const int faces[8][3]={{0,1,2},{0,2,3},{0,3,4},{0,4,1},{5,2,1},{5,3,2},{5,4,3},{5,1,4}};
             for(int f=0;f<8;++f) for(int k=0;k<3;++k) {
                 const float *p=points[faces[f][k]]; const float shade=.55f+float(f%4)*.14f;
+                const float highlight=gaze.target==object?1.15f:1.f;
                 objects.push_back({cx+c*p[0]+s*p[2],cy+p[1],cz-s*p[0]+c*p[2],
-                    (object==0?.84f:.35f)*shade,(object==0?.64f:.9f)*shade,(object==0?.38f:.76f)*shade});
+                    (objectPaused[object]?.95f:object==0?.84f:.35f)*shade*highlight,
+                    (objectPaused[object]?.44f:object==0?.64f:.9f)*shade*highlight,
+                    (objectPaused[object]?.67f:object==0?.38f:.76f)*shade*highlight});
             }
         }
         for(int i=0;i<80;++i) {
@@ -314,13 +371,14 @@ struct Experience {
         uint32_t layerCount=0;
         if(state.shouldRender) {
             if(recenter.exchange(false)) { center(state.predictedDisplayTime); layer.space=local; }
-            updateCamera(); makeObjects(seconds);
+            updateCamera();
             std::array<XrView,2> views{{{XR_TYPE_VIEW},{XR_TYPE_VIEW}}};
             XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO}; locate.viewConfigurationType=XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             locate.displayTime=state.predictedDisplayTime; locate.space=local;
             XrViewState viewState{XR_TYPE_VIEW_STATE}; uint32_t count=0;
             XR(xrLocateViews(session,&locate,&viewState,2,&count,views.data()));
             if(count==2 && (viewState.viewStateFlags&XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+                updateInteraction(state.predictedDisplayTime,seconds); makeObjects(seconds);
                 for(uint32_t i=0;i<2;++i) {
                     auto &eye=eyes[i]; uint32_t index=0;
                     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; XR(xrAcquireSwapchainImage(eye.swapchain,&acquire,&index));
@@ -351,13 +409,21 @@ struct Experience {
                     auto mvp=multiply(projection(views[i].fov),viewMatrix(views[i].pose));
                     if(!cameraActive) drawVertices(grid,GL_LINES,mvp);
                     drawVertices(objects,GL_TRIANGLES,mvp);
+                    if(gazeValid) {
+                        glDisable(GL_DEPTH_TEST);
+                        drawVertices(reticle,GL_TRIANGLES,multiply(mvp,gazePose));
+                    }
                     glBindFramebuffer(GL_FRAMEBUFFER,0); glFlush();
                     XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO}; XR(xrReleaseSwapchainImage(eye.swapchain,&release));
                     auto &p=projections[i]; p.pose=views[i].pose; p.fov=views[i].fov; p.subImage.swapchain=eye.swapchain;
                     p.subImage.imageRect.extent={static_cast<int32_t>(eye.width),static_cast<int32_t>(eye.height)};
                 }
                 layerCount=1; ++frames;
+            } else {
+                gaze.reset(); gazeValid=false; activate=false;
             }
+        } else {
+            gaze.reset(); gazeValid=false; activate=false;
         }
         XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.displayTime=state.predictedDisplayTime;
         end.environmentBlendMode=XR_ENVIRONMENT_BLEND_MODE_OPAQUE; end.layerCount=layerCount; end.layers=layers;
@@ -425,6 +491,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nati
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeCamera(JNIEnv*,jobject,jlong handle,jboolean value) {
     reinterpret_cast<Experience*>(handle)->cameraWanted=value;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeActivate(JNIEnv*,jobject,jlong handle) {
+    reinterpret_cast<Experience*>(handle)->activate=true;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeDestroy(JNIEnv *env,jobject,jlong handle) {
     auto *app=reinterpret_cast<Experience*>(handle); env->DeleteGlobalRef(app->activity); delete app;
