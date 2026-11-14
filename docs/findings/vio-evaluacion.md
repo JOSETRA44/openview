@@ -58,6 +58,55 @@ triangulación ya es temporal (contra el primer par con ≥ 5 cm de traslación)
 gestión de puntos no supone estéreo; el bloqueo es una aserción deliberada en su
 capa VIT. Ver [basalt-monocular.md](basalt-monocular.md).
 
+### Con el parche de OpenView (opción A)
+
+**Verificado** (2026-11-14, `.github/workflows/basalt-mono-eval.yml`): el mismo fork
+(`release-30ece25f`) compilado desde fuente con
+[patches/basalt/0001-allow-single-camera.patch](../../patches/basalt/README.md), mismas
+secuencias y mismo bench, calibración reducida a la primera cámara, puntuación **sin
+ajustar escala** como siempre:
+
+| Secuencia | Error (ATE RMSE) | % del recorrido | Cobertura | Velocidad |
+|---|---|---|---|---|
+| MOO09 arriba-abajo | 0.88 cm | 0.56 % | 99 % | 3.0× tiempo real |
+| MOO10 panorama | 1.07 cm | 0.42 % | 99 % | 4.1× |
+| MOO11 ida y vuelta | 1.96 cm | 0.27 % | 100 % | 4.5× |
+| MOO07 mapeo fácil | 1.97 cm | 0.12 % | 100 % | 4.9× |
+
+Qué establece:
+
+- Con una cámara, Basalt parcheado sigue al nivel de centímetros: entre igual y ~2,4× el
+  error de su propio estéreo, con la misma cobertura y **más rápido** (una cámara es menos
+  trabajo que dos).
+- La escala métrica converge sin inicializador monocular dedicado en estas secuencias: la
+  puntuación no ajusta escala, así que un error del 0,1–0,6 % del recorrido implica escala
+  correcta. La incógnita principal del estudio queda resuelta en datos de visor.
+
+Qué no establece: nada sobre el teléfono todavía. Estas cámaras son de obturador global,
+calibradas y sincronizadas; el sensor del teléfono es rolling shutter (29 ms medidos) sin
+modelo en Basalt, la calibración del dispositivo está sin hacer y Android aún no entrega
+imágenes al tracker. Ese es el siguiente experimento, no una conclusión.
+
+## OKVIS2 con una cámara
+
+**Verificado** (2026-11-14, `.github/workflows/okvis2-eval.yml`, run 43605730465):
+OKVIS2 `a2ea006` (repo oficial `smartroboticslab/okvis2`) con la configuración
+`tools/okvis2/euroc_mono.yaml` (solo cam0), sobre EuRoC V1_01_easy (146 s, 58,6 m),
+puntuado con el mismo `ate.py` y sin ajustar escala:
+
+| Secuencia | Error (ATE RMSE) | % del recorrido | Cobertura | Velocidad |
+|---|---|---|---|---|
+| V1_01_easy | 4.53 cm (mediana 3.81, máx 15.23) | 0.08 % | 99.96 % | 1.6× tiempo real |
+
+Qué establece: OKVIS2 funciona con una cámara sin parchear nada, con error de
+centímetros y escala métrica correcta (sin ajuste de escala). Es el respaldo viable
+de la opción B.
+
+Qué no establece: la comparación con Basalt no es cara a cara — las secuencias son
+distintas (MOO frente a EuRoC) — y OKVIS2 tampoco modela rolling shutter ni tiene
+adaptador VIT para el runtime. En los números disponibles, Basalt mide ~2–5× mejor
+y corre ~2–3× más rápido.
+
 ## Otros hallazgos del proceso
 
 - El paquete de Basalt no declara dependencias: sin `libfmt9` la biblioteca no carga.
@@ -70,8 +119,6 @@ capa VIT. Ver [basalt-monocular.md](basalt-monocular.md).
 
 ## Sin evaluar todavía
 
-- OKVIS2 (BSD-3): sus configuraciones publicadas son todas estéreo. Si admite una cámara
-  hay que comprobarlo ejecutándolo.
 - Capturas propias de teléfono: falta calibración de la cámara (el dispositivo no declara
   intrínsecos) y un backend que acepte una cámara.
 - Secuencias con rolling shutter y referencia (p. ej. TUM RS-VI).

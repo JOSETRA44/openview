@@ -21,7 +21,9 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | `analyze.py`: estadísticas y exportación EuRoC | Verificado con una captura real; estimadores probados con señales sintéticas |
 | Desfase cámara–IMU | No medido: falta una captura con giros |
 | Seguimiento 6DoF con Basalt y dos cámaras, en nuestro build | Verificado en CI con 4 secuencias públicas: 0.4–1.9 cm de error, 1.5–2.1× tiempo real. Ver [vio-evaluacion.md](vio-evaluacion.md) |
-| Basalt con una cámara | Verificado que **no** funciona: el backend lo rechaza al arrancar |
+| Basalt con una cámara | Tal como se distribuye, verificado que **no** arranca (aserción). Con el parche de OpenView, verificado en CI: 0,9–2,0 cm, 99–100 % de cobertura y 3,0–4,9× tiempo real en las 4 secuencias públicas, sin ajustar escala. Ver [vio-evaluacion.md](vio-evaluacion.md) |
+| OKVIS2 con una cámara | Verificado en CI sin parchear: 4,53 cm de ATE, 99,96 % de cobertura, 1,6× tiempo real en EuRoC V1_01_easy, sin ajustar escala. Ver [vio-evaluacion.md](vio-evaluacion.md) |
+| ADR-0003 | **Decidida (2026-11-14)**: Basalt parcheado como motor del teléfono, OKVIS2 como respaldo. Ver [0003-seguimiento-6dof-con-una-camara.md](../adr/0003-seguimiento-6dof-con-una-camara.md) |
 | Backend de seguimiento para una cámara | Sin elegir, ver [ADR-0003](../adr/0003-seguimiento-6dof-con-una-camara.md) |
 | Calibración de la cámara del teléfono | No hecha |
 | Evaluar una captura propia de teléfono | No ejecutado: falta calibración y backend |
