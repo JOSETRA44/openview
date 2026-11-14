@@ -1,0 +1,93 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+
+# Cross-builds the patched Basalt VIT backend (libbasalt.so) for Android
+# arm64-v8a, so the runtime APK can bundle a real 6DoF tracker. The phone
+# is an Infinix X6885 (Android 16); the NDK platform is kept at 28, the
+# lowest the runtime targets. Runs on demand: it is a packaging step for
+# the Android integration, not an evaluation.
+name: basalt-android
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - patches/basalt/**
+      - .github/workflows/basalt-android.yml
+
+env:
+  BASALT_REPO: https://gitlab.freedesktop.org/mateosss/basalt.git
+  BASALT_REF: release-30ece25f
+  OPENCV_URL: https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-android-sdk.zip
+  TBB_URL: https://github.com/uxlfoundation/oneTBB/archive/refs/tags/v2022.2.0.tar.gz
+  FMT_URL: https://github.com/fmtlib/fmt/archive/refs/tags/11.2.0.tar.gz
+  ANDROID_ABI: arm64-v8a
+  ANDROID_PLATFORM: android-28
+
+jobs:
+  libbasalt-arm64:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host dependencies and NDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libeigen3-dev unzip
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
+          echo "NDK=$ANDROID_HOME/ndk/26.3.11579264" >> "$GITHUB_ENV"
+
+      - name: OpenCV Android SDK
+        run: |
+          curl -sSL -o opencv.zip "$OPENCV_URL"
+          unzip -q opencv.zip
+          ls opencv-4.12.0-android-sdk/sdk/native/jni/OpenCVConfig.cmake
+
+      - name: Build oneTBB and fmt for Android
+        run: |
+          TOOLCHAIN="$NDK/build/cmake/android.toolchain.cmake"
+          curl -sSL "$TBB_URL" | tar xz
+          cmake -S oneTBB-2022.2.0 -B build-tbb -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DCMAKE_BUILD_TYPE=Release -DTBB_TEST=OFF -DTBB_EXAMPLES=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/deps"
+          cmake --build build-tbb -j4
+          cmake --install build-tbb
+          curl -sSL "$FMT_URL" | tar xz
+          cmake -S fmt-11.2.0 -B build-fmt -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DCMAKE_BUILD_TYPE=Release -DFMT_TEST=OFF -DFMT_DOC=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/deps"
+          cmake --build build-fmt -j4
+          cmake --install build-fmt
+
+      - name: Fetch Basalt and apply the single-camera patch
+        run: |
+          git clone --recursive "$BASALT_REPO" basalt-src
+          git -C basalt-src checkout "$BASALT_REF"
+          git -C basalt-src apply "$PWD"/patches/basalt/*.patch
+          grep -n "cam_count >= 1" basalt-src/src/vit/vit_tracker.cpp
+
+      - name: Build libbasalt for Android
+        run: |
+          cmake -S basalt-src -B build-basalt -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBASALT_BUILD_SHARED_LIBRARY_ONLY=ON \
+            -DBASALT_BUILD_VISUALIZATION=OFF \
+            -DEIGEN_ROOT=/usr/include/eigen3 \
+            -DOpenCV_DIR="$PWD/opencv-4.12.0-android-sdk/sdk/native/jni" \
+            -DCMAKE_PREFIX_PATH="$PWD/deps"
+          cmake --build build-basalt --target basalt -j4
+          find build-basalt -name "libbasalt.so*" -exec file {} \;
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: libbasalt-android-arm64
+          path: |
+            build-basalt/libbasalt.so*
+          if-no-files-found: warn
