@@ -1,0 +1,102 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+
+# Builds the Basalt fork with OpenView's single-camera patch and scores its
+# monocular mode on the same public sequences the stereo evaluation uses:
+# the option A experiment ADR-0003 asks for. Slow (Basalt and Monado are
+# built from source), so it only runs on demand or when it changes.
+name: basalt-mono-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      sequences:
+        description: Monado SLAM dataset sequences (MOO_others), space separated
+        default: MOO09_short_1_updown MOO10_short_2_panorama MOO11_short_3_backandforth MOO07_mapping_easy
+  push:
+    paths:
+      - patches/basalt/**
+      - tools/bench/**
+      - .github/workflows/basalt-mono-eval.yml
+
+env:
+  # Same fork release the stereo evaluation installs from the .deb, so the
+  # only difference between the two runs is the patch and the camera count.
+  BASALT_REPO: https://gitlab.freedesktop.org/mateosss/basalt.git
+  BASALT_REF: release-30ece25f
+  DATASETS: https://huggingface.co/datasets/collabora/monado-slam-datasets/resolve/main/M_monado_datasets/MO_odyssey_plus/MOO_others
+  SEQUENCES: ${{ inputs.sequences || 'MOO09_short_1_updown MOO10_short_2_panorama MOO11_short_3_backandforth MOO07_mapping_easy' }}
+
+jobs:
+  basalt-mono:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config libeigen3-dev \
+            libvulkan-dev glslang-tools libgl-dev libopengl-dev libegl-dev \
+            libudev-dev libbsd-dev libcjson-dev libopencv-dev python3-numpy unzip \
+            libtbb-dev libfmt-dev libyaml-cpp-dev libsqlite3-dev \
+            libboost-regex-dev libboost-filesystem-dev libboost-date-time-dev \
+            libboost-program-options-dev libjpeg-dev libpng-dev liblz4-dev \
+            libbz2-dev libglew-dev libepoxy-dev libfmt9 libtbb12
+
+      - name: Fetch Basalt and apply the single-camera patch
+        run: |
+          git clone --recursive "$BASALT_REPO" basalt-src
+          git -C basalt-src checkout "$BASALT_REF"
+          git -C basalt-src apply "$PWD"/patches/basalt/*.patch
+          grep -n "cam_count >= 1" basalt-src/src/vit/vit_tracker.cpp
+
+      - name: Build libbasalt (same preset as the published .deb)
+        run: |
+          cmake -S basalt-src --preset=ci
+          cmake --build basalt-src/build --target basalt -j4
+          find basalt-src/build -name 'libbasalt.so*' -exec ls -l {} +
+
+      - name: Apply Monado patches
+        run: git -C third_party/monado apply "$PWD"/patches/monado/*.patch
+
+      - name: Build monado-cli with the SLAM tracker
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DOPENVIEW_BUILD_EVAL_TOOLS=ON
+          cmake --build build --target cli
+
+      - name: Download sequences
+        run: |
+          mkdir -p data
+          for name in $SEQUENCES; do
+            curl -sSL -o "data/$name.zip" "$DATASETS/$name.zip"
+            unzip -q "data/$name.zip" -d data
+            rm "data/$name.zip"
+          done
+          du -sh data/*
+
+      - name: Evaluate monocular mode
+        run: |
+          python3 tools/bench/test_ate.py
+          python3 tools/bench/run_eval.py \
+            --cli "$(find build -name monado-cli -type f)" \
+            --vit-library "$(find basalt-src/build -name 'libbasalt.so*' -type f | head -1)" \
+            --calib basalt-src/data/msd/msdmo_calib.json \
+            --vio-config basalt-src/data/msd/msdmo_config.json \
+            --work eval \
+            --modes mono \
+            $(for name in $SEQUENCES; do echo "data/$name"; done)
+          cat eval/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: basalt-mono-eval
+          path: |
+            eval/results.*
+            eval/**/log.txt
+            eval/**/tracking.csv
+            eval/**/timing.csv

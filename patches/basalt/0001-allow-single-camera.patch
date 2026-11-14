@@ -1,0 +1,34 @@
+diff --git a/include/basalt/optical_flow/optical_flow.h b/include/basalt/optical_flow/optical_flow.h
+index c4510cb..f1d92f0 100644
+--- a/include/basalt/optical_flow/optical_flow.h
++++ b/include/basalt/optical_flow/optical_flow.h
+@@ -207,7 +207,10 @@ class OpticalFlowTyped : public OpticalFlowBase {
+     E.resize(getNumCams());
+     for (size_t i = 0; i < getNumCams(); i++) {
+       Eigen::Matrix4d Ed;
+-      SE3 T_i_j = calib.T_i_c[0].inverse() * calib.T_i_c[1];
++      // OpenView patch 0001: with a single camera there is no T_i_c[1]; the
++      // essential matrices are only used for stereo matching, so fall back
++      // to identity instead of reading past the calibration vector.
++      SE3 T_i_j = getNumCams() > 1 ? calib.T_i_c[0].inverse() * calib.T_i_c[1] : SE3();
+       computeEssential(T_i_j.template cast<double>(), Ed);
+       E[i] = Ed.cast<Scalar>();
+     }
+diff --git a/src/vit/vit_tracker.cpp b/src/vit/vit_tracker.cpp
+index d85e81d..b78811c 100644
+--- a/src/vit/vit_tracker.cpp
++++ b/src/vit/vit_tracker.cpp
+@@ -165,7 +165,12 @@ struct Tracker::Implementation {
+     // https://gitlab.com/VladyslavUsenko/basalt/-/issues/2#note_201965760
+     // https://gitlab.com/VladyslavUsenko/basalt/-/issues/25#note_362741510
+     // https://github.com/DLR-RM/granite
+-    ASSERT(cam_count > 1, "Basalt doesn't support running with %d cameras", cam_count);
++    // OpenView patch 0001: allow cam_count == 1. Landmarks are triangulated
++    // temporally (first pair with enough translation), so the estimator does
++    // not need the stereo pair to create points; what is unproven is whether
++    // metric scale converges without a monocular initializer. This build is
++    // for measuring exactly that.
++    ASSERT(cam_count >= 1, "Basalt needs at least one camera, got %d", cam_count);
+     calib_data_ready.cam.resize(cam_count, false);
+ 
+     if (config->file == nullptr) {
