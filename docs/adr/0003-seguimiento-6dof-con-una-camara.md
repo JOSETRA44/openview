@@ -1,6 +1,8 @@
 # ADR-0003: Seguimiento 6DoF con una sola cámara
 
-Estado: abierta (2026-11-12). Hay evidencia para descartar una opción; falta para elegir.
+Estado: **decidida (2026-11-14)**. Basalt parcheado es el backend del teléfono; OKVIS2 queda
+como respaldo. La decisión se tomó con las dos opciones medidas en datos de visor; lo que
+queda por medir es el teléfono real (calibración, driver de cámara y rolling shutter).
 
 ## Contexto
 
@@ -37,9 +39,9 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 
 ## Qué falta para decidir
 
-1. Ejecutar OKVIS2 con una cámara sobre las mismas secuencias. Si funciona, medir su error.
-   *En curso (Fase B, 2026-11-14): su código acepta una cámara por diseño y el
-   experimento sobre EuRoC está montado en `tools/okvis2/`.*
+1. ~~Ejecutar OKVIS2 con una cámara sobre las mismas secuencias. Si funciona, medir su error.~~
+   Hecho: corre sin parchear y mide **4,53 cm de ATE, 99,96 % de cobertura, 1,6× tiempo
+   real** en EuRoC V1_01_easy ([vio-evaluacion.md](../findings/vio-evaluacion.md)).
 2. ~~Leer cómo Basalt crea puntos nuevos, para estimar el tamaño real de la opción A.~~
    Hecho: [basalt-monocular.md](../findings/basalt-monocular.md). La estimación anterior
    era pesimista: Basalt ya triangula en el tiempo y el bloqueo es una aserción en la
@@ -51,7 +53,38 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 Si B funciona con una cámara, es el camino corto y C queda como mejora posterior. Si no, la
 elección es entre A y C, y el punto 2 decide.
 
+## Actualización 2026-11-14 (Fase B): la opción A medida
+
+El punto 2 se resolvió y la opción A dejó de ser una estimación: Basalt ya triangula en el
+tiempo y el bloqueo era una aserción de su capa VIT más un acceso fuera de rango. Con el
+parche de dos cambios ([patches/basalt](../../patches/basalt/README.md)), el experimento
+corrió y midió **0,9–2,0 cm de ATE, 99–100 % de cobertura y 3,0–4,9× tiempo real** con una
+cámara en las mismas secuencias, sin ajustar escala: la convergencia de escala, la
+incógnita que el estudio marcaba como riesgo real, se da en datos de visor. Detalle en
+[vio-evaluacion.md](../findings/vio-evaluacion.md).
+
+## Decisión (2026-11-14): Basalt parcheado como motor, OKVIS2 como respaldo
+
+La comparación completa, en datos de visor y sin ajustar escala:
+
+| Backend | Secuencias | ATE RMSE | Cobertura | Velocidad |
+|---|---|---|---|---|
+| Basalt + parche (opción A) | MOO09/10/11/07 | 0,9–2,0 cm | 99–100 % | 3,0–4,9× |
+| OKVIS2 (opción B) | EuRoC V1_01_easy | 4,53 cm | 99,96 % | 1,6× |
+
+Matiz: no es un cara a cara en la misma pista (secuencias distintas), pero en los números
+disponibles Basalt mide ~2–5× mejor y corre ~2–3× más rápido, y ya tiene la integración
+VIT que el runtime usa. OKVIS2 queda como respaldo: funciona con una cámara sin
+parchear, pero le faltan el adaptador VIT y velocidad. La opción C (filtro propio) queda
+aparcada: no hay razón para construirla mientras el camino A funcione.
+
+Lo que la decisión NO cubre, y queda como trabajo siguiente: el punto 3 (rolling
+shutter), la calibración real de la cámara del teléfono y el driver de cámara en
+Android. El producto en teléfono sigue en 3DoF hasta que ese experimento mida.
+
 ## Consecuencia inmediata
 
-Mientras tanto el producto en teléfono sigue en 3DoF, que ya está medido y afinado. La
-opción de ARCore como backend opcional y aislado (ADR-0001) cobra más peso como puente.
+El siguiente trabajo es el experimento con la captura real del Infinix: calibración
+nominal, driver de cámara y medición sobre datos de rolling shutter. La opción de
+ARCore como backend opcional y aislado (ADR-0001) sigue disponible como puente si
+ese experimento sale mal.

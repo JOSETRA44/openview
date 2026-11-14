@@ -4,7 +4,7 @@
 
 import numpy as np
 
-from ate import align, evaluate
+from ate import align, evaluate, load_trajectory
 
 
 def rotation_about_z(angle):
@@ -68,6 +68,24 @@ def test_tracking_that_stops_early_shows_in_coverage():
 def test_too_little_overlap_is_refused():
     t, truth = spiral()
     assert evaluate(t[:2], truth[:2], t, truth) is None
+
+
+def test_a_text_header_row_is_skipped(tmp_path=None):
+    # OKVIS2's final trajectory starts with "timestamp,..."; EuRoC comment
+    # headers start with '#'. Both must load.
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "traj.csv"
+        p.write_text(
+            "timestamp, p_RS_R_x [m], p_RS_R_y [m], p_RS_R_z [m]\n"
+            "# a comment\n"
+            "1403715273262142976, 0.1, 0.2, 0.3\n"
+            "1403715273312143104, 0.4, 0.5, 0.6\n"
+        )
+        t, pos = load_trajectory(p)
+    assert len(t) == 2 and pos[1, 0] == 0.4
 
 
 if __name__ == "__main__":

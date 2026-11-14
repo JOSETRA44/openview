@@ -28,7 +28,12 @@ def load_trajectory(path):
         for row in csv.reader(f):
             if not row or row[0].lstrip().startswith("#"):
                 continue
-            rows.append([float(v) for v in row[:4]])
+            try:
+                rows.append([float(v) for v in row[:4]])
+            except ValueError:
+                # A header row ("timestamp,..."), as OKVIS2 writes; data rows
+                # are numeric by construction.
+                continue
     data = np.array(rows, dtype=np.float64).reshape(len(rows), 4)
     data = data[np.argsort(data[:, 0])]
     return data[:, 0], data[:, 1:4]
