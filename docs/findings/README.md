@@ -18,3 +18,5 @@ Archivos:
 - [vio-evaluacion.md](vio-evaluacion.md) — resultados de seguimiento 6DoF sobre datasets
 - [basalt-monocular.md](basalt-monocular.md) — lectura del código de Basalt: qué costaría que aceptara una cámara
 - [estado-de-verificacion.md](estado-de-verificacion.md) — qué se ha ejecutado y qué no
+- [experiencia-integracion.md](experiencia-integracion.md) — experiencia propia, pruebas de teléfono y fallos corregidos
+- [monocular-prototype.md](monocular-prototype.md) — calibración y avance monocular XRSLAM
