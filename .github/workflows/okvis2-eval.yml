@@ -75,6 +75,12 @@ jobs:
           fi
           unzip -q data/sequence.zip -d data
           rm data/sequence.zip
+          # The ASL zip holds mav0/ at its root, not <sequence>/mav0/:
+          # normalise so the rest of the workflow sees one layout.
+          if [ -d data/mav0 ]; then
+            mkdir -p "data/$SEQUENCE"
+            mv data/mav0 "data/$SEQUENCE/"
+          fi
           test -d "data/$SEQUENCE/mav0"
           du -sh "data/$SEQUENCE"
 
