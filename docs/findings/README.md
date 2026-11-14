@@ -16,4 +16,5 @@ Archivos:
 - [android-plataforma.md](android-plataforma.md) — restricciones de Android
 - [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) — mediciones en un teléfono real
 - [vio-evaluacion.md](vio-evaluacion.md) — resultados de seguimiento 6DoF sobre datasets
+- [basalt-monocular.md](basalt-monocular.md) — lectura del código de Basalt: qué costaría que aceptara una cámara
 - [estado-de-verificacion.md](estado-de-verificacion.md) — qué se ha ejecutado y qué no

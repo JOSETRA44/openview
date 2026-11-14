@@ -30,7 +30,7 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 
 | Opción | A favor | En contra | Estado |
 |---|---|---|---|
-| A. Extender Basalt a una cámara | Reutiliza un optimizador probado y la integración VIT existente | Hay que añadir inicialización por movimiento y triangulación temporal dentro de un código ajeno; seguiría sin rolling shutter | Sin estudiar su código |
+| A. Extender Basalt a una cámara | Reutiliza un optimizador probado y la integración VIT existente | Seguiría sin rolling shutter; la convergencia de escala sin inicializador es una incógnita | Estudiada: ver [basalt-monocular.md](../findings/basalt-monocular.md) |
 | B. OKVIS2 (BSD-3) | Activo (2026-08), calibración online opcional | Solo publica configuraciones estéreo; dependencias pesadas; habría que escribirle el adaptador VIT | Sin ejecutar |
 | C. Filtro propio tipo MSCKF | Una cámara es su caso natural (no necesita profundidad inicial); el rolling shutter y el desfase temporal entran como estados; código propio y permisivo | Es el trabajo más grande; las implementaciones de referencia son GPL y solo se pueden usar como literatura | Sin empezar |
 | D. Exigir dos cámaras traseras como par estéreo | Usaría Basalt tal cual | Android no garantiza abrir dos cámaras a la vez, y el teléfono de referencia no las agrupa; base de dispositivos reducida | Descartada como requisito general |
@@ -38,7 +38,13 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 ## Qué falta para decidir
 
 1. Ejecutar OKVIS2 con una cámara sobre las mismas secuencias. Si funciona, medir su error.
-2. Leer cómo Basalt crea puntos nuevos, para estimar el tamaño real de la opción A.
+   *En curso (Fase B, 2026-11-14): su código acepta una cámara por diseño y el
+   experimento sobre EuRoC está montado en `tools/okvis2/`.*
+2. ~~Leer cómo Basalt crea puntos nuevos, para estimar el tamaño real de la opción A.~~
+   Hecho: [basalt-monocular.md](../findings/basalt-monocular.md). La estimación anterior
+   era pesimista: Basalt ya triangula en el tiempo y el bloqueo es una aserción en la
+   capa VIT más un acceso fuera de rango. Lo que no se sabe sin medir es si la escala
+   converge sin un inicializador monocular.
 3. Una secuencia pública con rolling shutter y referencia, para medir cuánto degrada a un
    backend que lo ignora.
 

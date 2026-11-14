@@ -49,9 +49,14 @@ Basalt doesn't support running with 1 cameras
 ```
 
 La hipótesis "un VIO permisivo existente funciona con una sola cámara" queda **refutada para
-Basalt tal como se distribuye**. Basalt obtiene la profundidad de cada punto triangulando
-entre las dos cámaras del mismo instante; con una sola cámara esa profundidad tendría que
-salir del movimiento, que es otra inicialización y otra gestión de puntos.
+Basalt tal como se distribuye**.
+
+*Corrección (2026-11-14):* este párrafo decía que Basalt obtiene la profundidad
+triangulando entre las dos cámaras del mismo instante y que con una cámara haría
+falta otra inicialización y otra gestión de puntos. Tras leer su código, la
+triangulación ya es temporal (contra el primer par con ≥ 5 cm de traslación) y la
+gestión de puntos no supone estéreo; el bloqueo es una aserción deliberada en su
+capa VIT. Ver [basalt-monocular.md](basalt-monocular.md).
 
 ## Otros hallazgos del proceso
 
