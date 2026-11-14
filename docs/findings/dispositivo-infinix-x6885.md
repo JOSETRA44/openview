@@ -179,6 +179,52 @@ lectura después, 24.7 ms con los valores de esa captura. El residuo es 0.3 ms.
 todo el retardo aparente lo explican exposición y rolling shutter. Un dato con correlación
 moderada no lo establece; hay que repetirlo con exposición fija.
 
+## Tasas de refresco (2026-11-14)
+
+Método: `tools/display-timing/measure.py`, 40 s por corrida tras 6 s de calentamiento, con el
+runtime instalado el 2026-11-12 (parches 0001–0003). Datos crudos fuera del repositorio.
+
+**Verificado**:
+
+| App | Tasa pedida | Tasa real | Descartados | Entrega→pantalla p5/p50/p95 | En periodos | Horizonte mín/medio/máx |
+|---|---|---|---|---|---|---|
+| `hello_xr` | 60 Hz | 60 Hz | 0.0 % | 26/28/29 ms | 1.68 | 22/36/49 ms |
+| `hello_xr` | 90 Hz | 60 Hz | 0.2 % | 26/28/30 ms | 1.68 | 23/36/49 ms |
+| `hello_xr` | 120 Hz | 90 Hz | 0.0 % | 20/21/22 ms | 1.89 | 21/35/53 ms |
+| `hello_xr` | 144 Hz | 90 Hz | 0.0 % | 20/21/22 ms | 1.89 | 22/35/53 ms |
+| `experience`, espacio | la del teléfono | 60 Hz (un salto breve a 90) | 1.8 % | 26/28/30 ms | 1.68 | 23/33/47 ms |
+| `experience`, cámara | la del teléfono | 60 Hz | 0.1 % | 23/29/30 ms | 1.74 | 17/30/44 ms |
+
+Qué establece:
+
+- **A 90 Hz el runtime funciona**: 91 fps, sin frames descartados, 21 ms de latencia. El
+  enganche a vsync (parche 0003) no necesitó ajuste.
+- **El modelo de dos periodos (parche 0002) escala**: 1.89 periodos a 90 Hz frente a 1.68–1.86
+  a 60 Hz. Sobrestima entre 1 y 5 ms.
+- **La app propia rinde como `hello_xr`**, también con la cámara encendida.
+- **120 y 144 Hz no se pudieron medir**: el teléfono no los concede a esta ventana aunque los
+  ajustes del sistema los pidan. La tasa la decide Android por ventana, por votación; los
+  ajustes `min_refresh_rate`/`peak_refresh_rate` solo acotan.
+
+### Defecto: el runtime puede creer una tasa distinta de la real
+
+En las corridas a 60 Hz de la tabla, el horizonte mínimo pedido es 22 ms: dos periodos de
+**90 Hz**, no de 60 (serían 33 ms, como el 2026-11-12). El runtime lee la tasa una vez al
+arrancar (`MonadoView.getDisplayRefreshRate`) y no pide ninguna
+(`comp_window_android.c` pasa `preferred_display_mode_id = 0`); Android fija la tasa de la
+ventana después. Cuando no coinciden, la pose se predice para un instante equivocado: aquí
+unos 6 ms antes de tiempo (22 ms supuestos frente a 28 medidos).
+
+Que el runtime creía 90 Hz es **inferido** del horizonte; el log no lo dice directamente.
+
+**Límite**: una corrida forzando 60 Hz con el launcher ya a 60 Hz dio un 33 % de frames
+descartados con 17–19 ms de latencia, y no se ha reproducido ni explicado. Indica que la fase
+fija del parche 0003 puede quedar en el borde del latch de SurfaceFlinger.
+
+Corrección propuesta: que el runtime elija un modo de pantalla y lo pida, de forma que la
+tasa supuesta y la real sean la misma; y, desde API 33, tomar la fecha límite de cada frame
+de `AChoreographer` en vez de una fase fija (pendiente de ADR-0002).
+
 ## Térmica
 
 **Verificado**, `hello_xr` durante ~8 min cargando por USB: piel estable en 34.6–35.9 °C,

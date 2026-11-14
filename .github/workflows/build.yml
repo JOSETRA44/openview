@@ -41,6 +41,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends python3-numpy
           python3 tools/sensor-recorder/test_analyze.py
           python3 tools/bench/test_ate.py
+          python3 tools/display-timing/test_measure.py
           c++ -std=c++17 android/experience/tests/camera_uv_test.cpp -o /tmp/camera_uv_test
           /tmp/camera_uv_test
 
