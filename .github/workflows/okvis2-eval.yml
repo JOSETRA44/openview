@@ -66,7 +66,13 @@ jobs:
       - name: Download sequence
         run: |
           mkdir -p data
-          curl -sSL -o data/sequence.zip "$DATASET_URL"
+          curl -fsSL --retry 3 --retry-all-errors -o data/sequence.zip "$DATASET_URL"
+          # The default mirror serves V1_01_easy.zip from LFS; a truncated
+          # download used to fail silently later in unzip, so check the size.
+          if [ "$DATASET_URL" = "https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/main/V1_01_easy.zip" ]; then
+            size="$(stat -c%s data/sequence.zip)"
+            test "$size" -eq 1149702102 || { echo "download truncated: got $size bytes, expected 1149702102"; exit 1; }
+          fi
           unzip -q data/sequence.zip -d data
           rm data/sequence.zip
           test -d "data/$SEQUENCE/mav0"
