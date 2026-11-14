@@ -18,6 +18,18 @@ struct InstanceClaim {
     ~InstanceClaim() { instance_claimed = false; }
 };
 void require(bool condition, const char *message) { if (!condition) throw std::runtime_error(message); }
+std::string scalar(const cv::FileNode &node) {
+    std::string value;
+    node >> value;
+    // OpenCV's YAML reader keeps an inline comment inside a plain scalar
+    // ("pinhole  # camera model"); calibration files in the wild use them,
+    // so strip the comment and surrounding blanks before comparing.
+    const auto comment = value.find(" #");
+    if (comment != std::string::npos) value.erase(comment);
+    const auto first = value.find_first_not_of(" \t\r\n");
+    const auto last = value.find_last_not_of(" \t\r\n");
+    return first == std::string::npos ? std::string() : value.substr(first, last - first + 1);
+}
 std::vector<double> values(const cv::FileNode &node, size_t count) {
     std::vector<double> result;
     node >> result;
@@ -46,8 +58,8 @@ public:
         cv::FileStorage sensor(device_path, cv::FileStorage::READ);
         require(sensor.isOpened(), "Cannot open device calibration");
         const auto camera = sensor["cam0"];
-        std::string model, distortion_model;
-        camera["camera_model"] >> model; camera["distortion_model"] >> distortion_model;
+        const std::string model = scalar(camera["camera_model"]);
+        const std::string distortion_model = scalar(camera["distortion_model"]);
         require(model == "pinhole" && distortion_model == "radtan", "Only calibrated pinhole/radtan is supported");
         require(!camera["time_offset"].empty() && double(camera["time_offset"]) == 0,
                 "Nonzero/missing time offset is not supported by this experiment");
