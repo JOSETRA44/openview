@@ -8,4 +8,9 @@
     <string name="status_saved">Saved: %1$d frames, %2$d gyro, %3$d accel\n%4$s</string>
     <string name="status_no_camera">No back camera found.</string>
     <string name="status_no_camera_permission">Camera permission is needed to record.</string>
+    <string name="exposure_label">Fixed exposure (ms)</string>
+    <string name="iso_label">ISO (0 = select once)</string>
+    <string name="focus_label">Fixed focus (diopters; 0 = infinity)</string>
+    <string name="controls_status">Controls: %1$s · %2$d verified frames</string>
+    <string name="calibration_help">The preview appears while recording. Wait for verified controls. Keep the complete flat board visible, pause at each pose, and vary its position and tilt. Use the same focus for calibration and tracking.</string>
 </resources>

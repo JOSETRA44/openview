@@ -15,6 +15,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from capture_quality import audit, verified_rows
 
 
 def board_points(columns, rows, square_m):
@@ -135,9 +136,11 @@ def calibration_report(image_points, image_size, columns=8, rows=6, square_m=.02
     return report
 
 
-def scan_images(source, columns, rows, stride=10, max_images=300):
+def scan_images(source, columns, rows, stride=10, max_images=300, allowed_files=None):
     directory = source / "frames" if (source / "frames").is_dir() else source
     files = sorted(p for p in directory.iterdir() if p.suffix.lower() in {".pgm", ".png", ".jpg", ".jpeg"})
+    if allowed_files is not None:
+        files = [p for p in files if p.name in allowed_files]
     selected = files[::stride][:max_images]
     points, names, rejected = [], [], []
     size = None
@@ -171,6 +174,8 @@ def main(argv=None):
     parser.add_argument("--max-images", type=int, default=300)
     parser.add_argument("--max-error-px", type=float, default=1)
     parser.add_argument("--output", type=Path, default=Path("calibration.json"))
+    parser.add_argument("--require-fixed-controls", action="store_true",
+                        help="require completed recorder capture and verified fixed-control frames; exclude warmup")
     args = parser.parse_args(argv)
     try:
         board_points(args.columns, args.rows, args.square_mm / 1000)
@@ -179,11 +184,24 @@ def main(argv=None):
             return 0
         if args.stride < 1 or args.max_images < 12:
             raise ValueError("stride must be positive and max-images at least 12")
-        points, size, detection = scan_images(args.source, args.columns, args.rows, args.stride, args.max_images)
+        quality, allowed_files = None, None
+        if args.require_fixed_controls:
+            quality = audit(args.source)
+            if quality["status"] != "accepted_fixed_controls":
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(json.dumps({"schema": "openview.camera-calibration.v1", "status": "rejected",
+                    "reasons": quality["reasons"], "capture_quality": quality}, indent=2) + "\n", encoding="utf-8")
+                print("calibration rejected: fixed camera controls not verified")
+                return 2
+            _, rows = verified_rows(args.source)
+            allowed_files = {r["sensor_timestamp_ns"] + ".pgm" for r in rows}
+        points, size, detection = scan_images(args.source, args.columns, args.rows, args.stride, args.max_images, allowed_files)
         report = calibration_report(points, size, args.columns, args.rows, args.square_mm / 1000, args.max_error_px)
         report["detection"] = detection
         report["source"] = str(args.source.resolve())
         report["opencv_version"] = cv2.__version__
+        if quality is not None:
+            report["capture_quality"] = quality
         device = args.source / "device.json"
         if device.exists():
             report["device"] = json.loads(device.read_text(encoding="utf-8"))

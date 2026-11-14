@@ -14,6 +14,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import android.view.WindowManager
@@ -34,6 +35,7 @@ class MainActivity : Activity() {
     private external fun nativeStop(handle: Long)
     private external fun nativeRecenter(handle: Long)
     private external fun nativeCamera(handle: Long, enabled: Boolean)
+    private external fun nativeActivate(handle: Long)
     private external fun nativeDestroy(handle: Long)
     private val engineLock = Any()
     private var engine = 0L
@@ -65,13 +67,17 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
         status = TextView(this).apply {
-            text = "OpenView · Preparando tu espacio…\nVolumen +: centrar · Volumen −: cámara · Atrás: salir"
+            text = "OpenView · Preparando tu espacio…\nMira una escultura durante 1,25 s para pausar su giro. " +
+                "Aparta la mirada y vuelve para reanudar.\nVolumen +: centrar · Volumen −: cámara · Atrás: salir"
             textSize = 18f; setTextColor(Color.rgb(164, 234, 207)); gravity = Gravity.CENTER
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setBackgroundColor(Color.rgb(13, 23, 30)); setPadding(24, 24, 24, 24)
             addView(status)
+            addView(Button(this@MainActivity).apply {
+                text = "Activar objeto señalado"; setOnClickListener { activateObject() }
+            })
             addView(Button(this@MainActivity).apply {
                 text = "Centrar vista"; setOnClickListener { recenter() }
             })
@@ -138,6 +144,12 @@ class MainActivity : Activity() {
         }
     }
     private fun recenter() { synchronized(engineLock) { if (engine != 0L) nativeRecenter(engine) } }
+    private fun activateObject() { synchronized(engineLock) { if (engine != 0L) nativeActivate(engine) } }
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        // Some compositors own the touch window. Dwell remains available in that case.
+        if (event.actionMasked == MotionEvent.ACTION_UP) { activateObject(); return true }
+        return event.actionMasked == MotionEvent.ACTION_DOWN || super.onTouchEvent(event)
+    }
     private fun setCamera(enabled: Boolean) {
         wantsCamera = enabled
         if (enabled && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
@@ -148,6 +160,8 @@ class MainActivity : Activity() {
         if (event.repeatCount == 0) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) { recenter(); return true }
             if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) { setCamera(!wantsCamera); return true }
+            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                keyCode == KeyEvent.KEYCODE_SPACE) { activateObject(); return true }
         }
         return super.onKeyDown(keyCode, event)
     }
