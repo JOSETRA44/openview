@@ -51,6 +51,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
             -DCMAKE_BUILD_TYPE=Release -DTBB_TEST=OFF -DTBB_EXAMPLES=OFF \
+            -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/deps"
           cmake --build build-tbb -j4
           cmake --install build-tbb
@@ -59,6 +60,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DANDROID_ABI="$ANDROID_ABI" -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
             -DCMAKE_BUILD_TYPE=Release -DFMT_TEST=OFF -DFMT_DOC=OFF \
+            -DBUILD_SHARED_LIBS=OFF -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_INSTALL_PREFIX="$PWD/deps"
           cmake --build build-fmt -j4
           cmake --install build-fmt
