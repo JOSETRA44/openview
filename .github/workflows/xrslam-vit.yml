@@ -1,0 +1,76 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+name: xrslam-vit
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tracking/xrslam/**
+      - .github/workflows/xrslam-vit.yml
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: VIT ownership, lifecycle and failure contract
+        run: |
+          cmake -S tracking/xrslam -B build-vit -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS='-Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer'
+          cmake --build build-vit --parallel 2
+          ctest --test-dir build-vit --output-on-failure
+  real-backend:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    env:
+      XRSLAM_REVISION: 4beb1a942f33da9afbfae2d70e2c641cfc2bb675
+      DATASET_URL: https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/d05bd6a92a5f456562153f83d65805fea27cb57d/V1_01_easy.zip
+      DATASET_SHA256: a920fe5b5e69a6ad19b32f1cfaf90ac2f59d45dfd1ca18cc9722e07684ba45fa
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Dependencies and pinned upstream
+        run: |
+          mkdir -p results
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build libopencv-dev libatlas-base-dev libssl-dev python3-numpy unzip
+          git init upstream
+          git -C upstream remote add origin https://github.com/openxrlab/xrslam.git
+          git -C upstream fetch --depth 1 origin "$XRSLAM_REVISION"
+          git -C upstream checkout --detach FETCH_HEAD
+          python3 tracking/xrslam/prepare.py upstream
+          git -C upstream diff > results/build-adaptation.patch
+          cp upstream/LICENSE results/XRSLAM-LICENSE.txt
+      - name: Build real shared VIT backend and consumer
+        timeout-minutes: 12
+        run: |
+          set -o pipefail
+          cmake -S upstream -B build-xrslam -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DXRSLAM_ENABLE_THREADING=OFF -DXRSLAM_ENABLE_DEBUG_INSPECTION=OFF \
+            -DOPENVIEW_HEADLESS_SOURCE="$PWD/tools/mono/xrslam_headless.cpp" \
+            -DOPENVIEW_VIT_SOURCE="$PWD/tracking/xrslam" -DOPENVIEW_XRSLAM_BACKEND=ON \
+            2>&1 | tee results/configure.log
+          cmake --build build-xrslam --target vit-replay vit-contract-test --parallel 2 2>&1 | tee results/build.log
+          build-xrslam/openview-vit/vit-contract-test
+          nm -D --defined-only build-xrslam/openview-vit/libopenview-xrslam-vit.so > results/exported-symbols.txt
+      - name: Download pinned monocular sequence
+        timeout-minutes: 5
+        run: |
+          curl --fail --location --retry 1 --connect-timeout 20 --max-time 240 "$DATASET_URL" -o sequence.zip
+          echo "$DATASET_SHA256  sequence.zip" | sha256sum --check
+          unzip -q sequence.zip 'mav0/cam0/*' 'mav0/imu0/*' 'mav0/state_groundtruth_estimate0/*' -d sequence
+      - name: Replay through VIT and score without fitting scale
+        timeout-minutes: 6
+        run: |
+          set -o pipefail
+          python3 tools/mono/xrslam_eval.py --binary build-xrslam/openview-vit/vit-replay \
+            --source upstream --sequence sequence/mav0 --sequence-name V1_01_easy \
+            --output results/vit-run --timeout 300 2>&1 | tee results/evaluation.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xrslam-vit-experiment
+          path: results/

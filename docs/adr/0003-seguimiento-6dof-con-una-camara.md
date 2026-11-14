@@ -32,10 +32,11 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 
 | Opción | A favor | En contra | Estado |
 |---|---|---|---|
-| A. Extender Basalt a una cámara | Reutiliza un optimizador probado y la integración VIT existente | Seguiría sin rolling shutter; la convergencia de escala sin inicializador es una incógnita | Estudiada: ver [basalt-monocular.md](../findings/basalt-monocular.md) |
-| B. OKVIS2 (BSD-3) | Activo (2026-08), calibración online opcional | Solo publica configuraciones estéreo; dependencias pesadas; habría que escribirle el adaptador VIT | Sin ejecutar |
+| A. Extender Basalt a una cámara | Reutiliza un optimizador probado y la integración VIT existente | Seguiría sin rolling shutter | **Elegida y medida**: parche mínimo (aserción VIT + acceso fuera de rango); 0,88–1,97 cm de ATE en las secuencias MOO del propio bench, 99–100 % de cobertura, 3,0–4,9× tiempo real, sin ajustar escala — la escala métrica converge sin inicializador. Ver [basalt-monocular.md](../findings/basalt-monocular.md) |
+| B. OKVIS2 (BSD-3) | Monocular por diseño en su frontend; activo | Sus contribuidores declaran la inicialización monocular no soportada; sin rolling shutter; adaptador VIT por escribir | **Medido sin parchear**: 4,53 cm de ATE, 99,96 % de cobertura, 1,6× tiempo real en EuRoC V1_01_easy. Queda como respaldo |
 | C. Filtro propio tipo MSCKF | Una cámara es su caso natural (no necesita profundidad inicial); el rolling shutter y el desfase temporal entran como estados; código propio y permisivo | Es el trabajo más grande; las implementaciones de referencia son GPL y solo se pueden usar como literatura | Sin empezar |
 | D. Exigir dos cámaras traseras como par estéreo | Usaría Basalt tal cual | Android no garantiza abrir dos cámaras a la vez, y el teléfono de referencia no las agrupa; base de dispositivos reducida | Descartada como requisito general |
+| E. XRSLAM (código principal Apache-2.0) | Inicializa monocular+IMU; experimento propio V1_01_easy con 5.18 cm ATE y 96.97 % de cobertura | Falta adaptador VIT, build Android, evaluación rolling shutter y dependencias transitivas | Candidato siguiente; probado offline, no elegido aún para el producto |
 
 ## Qué falta para decidir
 
@@ -45,13 +46,20 @@ monocular, modelo de rolling shutter, y calibración por dispositivo.
 2. ~~Leer cómo Basalt crea puntos nuevos, para estimar el tamaño real de la opción A.~~
    Hecho: [basalt-monocular.md](../findings/basalt-monocular.md). La estimación anterior
    era pesimista: Basalt ya triangula en el tiempo y el bloqueo es una aserción en la
-   capa VIT más un acceso fuera de rango. Lo que no se sabe sin medir es si la escala
-   converge sin un inicializador monocular.
-3. Una secuencia pública con rolling shutter y referencia, para medir cuánto degrada a un
+   capa VIT más un acceso fuera de rango. Medido después: la escala converge sin
+   inicializador monocular (puntuación sin ajustar escala).
+3. Ampliar y repetir la evaluación XRSLAM monocular+IMU; su primer experimento fijado por
+   revisión ya pasó (5,18 cm, misma secuencia que OKVIS2). Sin adaptador VIT ni build
+   Android: no compite con la decisión, queda como candidato observado.
+4. Una secuencia pública con rolling shutter y referencia, para medir cuánto degrada a un
    backend que lo ignora.
 
-Si B funciona con una cámara, es el camino corto y C queda como mejora posterior. Si no, la
-elección es entre A y C, y el punto 2 decide.
+Actualización de investigación (2026-11-12): un contribuidor de OKVIS2 explica en
+[issue 21](https://github.com/ethz-mrl/okvis2/issues/21) que su inicialización no soporta
+monocular, tampoco agregando IMU. No es un resultado de ejecución propia y no descarta
+adaptaciones. Se añade XRSLAM como candidato experimental, no como backend elegido;
+ver [avance monocular](../findings/monocular-prototype.md). La herramienta de calibración
+intrínseca ya está implementada en `tools/mono`, pero falta una captura física del tablero.
 
 ## Actualización 2026-11-14 (Fase B): la opción A medida
 

@@ -7,4 +7,9 @@
     <string name="status_saved">Guardado: %1$d frames, %2$d giroscopio, %3$d acelerómetro\n%4$s</string>
     <string name="status_no_camera">No se encontró cámara trasera.</string>
     <string name="status_no_camera_permission">Hace falta el permiso de cámara para grabar.</string>
+    <string name="exposure_label">Exposición fija (ms)</string>
+    <string name="iso_label">ISO (0 = elegir una vez)</string>
+    <string name="focus_label">Enfoque fijo (dioptrías; 0 = infinito)</string>
+    <string name="controls_status">Controles: %1$s · %2$d frames verificados</string>
+    <string name="calibration_help">La vista previa aparece al grabar. Espera los controles verificados. Mantén visible el tablero plano completo, pausa en cada pose y varía su posición e inclinación. Usa el mismo enfoque al calibrar y al grabar seguimiento.</string>
 </resources>

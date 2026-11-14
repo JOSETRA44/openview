@@ -56,7 +56,7 @@ class OpenViewUi @Inject constructor(@ApplicationContext val context: Context) :
             context,
             0,
             Intent.makeMainActivity(
-                ComponentName.createRelative(context, AboutActivity::class.qualifiedName!!)
+                ComponentName.createRelative(context, HomeActivity::class.qualifiedName!!)
             ),
             PendingIntent.FLAG_IMMUTABLE,
         )
