@@ -57,7 +57,9 @@ class CaptureQualityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             self.fixture(root)
-            list((root / "frames").iterdir())[-1].unlink()
+            # A verified frame (i=20) must have its image; deleting an
+            # unverified warmup frame instead would be filesystem-order luck.
+            (root / "frames" / (str(12345678901234567 + 20 * 33333333) + ".pgm")).unlink()
             with self.assertRaises(ValueError):
                 audit(root)
 
