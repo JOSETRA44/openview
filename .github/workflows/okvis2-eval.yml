@@ -100,3 +100,4 @@ jobs:
           path: |
             eval/results.*
             eval/**/log.txt
+            data/**/okvis2-slam-final_trajectory.csv
