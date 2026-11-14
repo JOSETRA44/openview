@@ -11,3 +11,16 @@ local.properties
 CMakeUserPresets.json
 android/app/build/
 tools/sensor-recorder/app/build/
+
+# Registros de ejecución y de caída de la JVM: nunca se versionan
+*.log
+hs_err_pid*.log
+replay_pid*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Datos y resultados de evaluación (los datasets viven en openview-datasets)
+/data/
+/eval/

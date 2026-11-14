@@ -10,8 +10,22 @@ El porqué está en [docs/adr/0001](docs/adr/0001-runtime-derivado-de-monado.md)
 
 ## Estado
 
-Fase 0–1 (línea base y esqueleto). Nada de lo que hay aquí se ha compilado ni ejecutado todavía;
-ver [docs/findings/estado-de-verificacion.md](docs/findings/estado-de-verificacion.md).
+Fases 0–2 en curso (línea base, runtime y caracterización de dispositivo). El detalle,
+elemento a elemento, está en
+[docs/findings/estado-de-verificacion.md](docs/findings/estado-de-verificacion.md) y el
+plan en [ROADMAP.md](ROADMAP.md). Resumen verificado a 2026-11-12:
+
+- CI compila el runtime en Linux y el APK de Android, corre los tests y un smoke test
+  OpenXR completo (loader → IPC → servicio).
+- En un teléfono real (Infinix X6885, 60 Hz) OpenView sirve a `hello_xr` de forma
+  continua; con el enganche a vsync de Choreographer los frames descartados bajan de
+  ~6 % a 0,2 % y la latencia de presentación queda estable en 29–32 ms.
+- El seguimiento en teléfono es 3DoF por IMU. El 6DoF está bloqueado en una decisión
+  abierta ([docs/adr/0003](docs/adr/0003-seguimiento-6dof-con-una-camara.md)): Basalt
+  funciona con dos cámaras (error de 0,4–1,9 cm en secuencias públicas) pero rechaza
+  una sola, y el backend monocular aún no está elegido.
+- Todavía no hay capa de producto (home, passthrough, manos, boundary): es trabajo de
+  las fases siguientes, no algo que este repositorio ya tenga.
 
 ## Estructura
 
@@ -20,9 +34,13 @@ ver [docs/findings/estado-de-verificacion.md](docs/findings/estado-de-verificaci
 | `runtime/` | Biblioteca OpenXR (`openxr_openview`) y servicio (`openview-service`) |
 | `third_party/monado/` | Submódulo fijado; se consume con `add_subdirectory()` |
 | `patches/monado/` | Cambios sobre Monado pendientes de enviar upstream |
+| `android/` | APK del runtime (`dev.openview.runtime`) sobre `android_common` de Monado |
+| `tools/sensor-recorder/` | App y análisis para capturar cámara + IMU y exportar en formato EuRoC |
+| `tools/bench/` | Evaluación de backends de seguimiento contra secuencias con referencia |
 | `docs/architecture/` | Capas y regla de dependencias |
 | `docs/adr/` | Decisiones de arquitectura, una por archivo |
 | `docs/findings/` | Hallazgos de investigación, clasificados por nivel de evidencia |
+| `ROADMAP.md` | Fases del proyecto y qué falta para acercarse a un visor completo |
 
 ## Compilar (Linux)
 
@@ -39,6 +57,18 @@ libegl-dev libudev-dev libbsd-dev libcjson-dev`.
 
 Ejecutar: `build/runtime/openview-service` y, en otra terminal, cualquier app OpenXR con
 `XR_RUNTIME_JSON=build/openxr_openview-dev.json`.
+
+## Compilar (Android)
+
+```sh
+git submodule update --init
+git -C third_party/monado apply "$PWD"/patches/monado/*.patch
+./gradlew --no-daemon :app:assembleDebug :recorder:assembleDebug
+```
+
+Los APK de depuración se firman con `android/debug.keystore`, una clave de depuración
+fija y pública a propósito (para que los artefactos de CI sean instalables uno sobre
+otro). No se usa para ninguna publicación.
 
 ## Licencia
 
