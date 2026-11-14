@@ -1,0 +1,96 @@
+# Copyright 2026, OpenView contributors.
+# SPDX-License-Identifier: BSL-1.0
+
+# Scores OKVIS2 running on a single camera over a EuRoC sequence with ground
+# truth: the monocular experiment ADR-0003 asks for. Slow (OKVIS2 is built
+# from source), so it only runs on demand or when the evaluation changes.
+name: okvis2-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset_url:
+        description: EuRoC sequence zip (ASL format)
+        default: https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/main/V1_01_easy.zip
+      sequence:
+        description: Sequence directory inside the zip
+        default: V1_01_easy
+  push:
+    paths:
+      - tools/okvis2/**
+      - .github/workflows/okvis2-eval.yml
+
+env:
+  # OKVIS2 upstream (BSD-3). ethz-asl/okvis2 no longer exists; the project
+  # lives under smartroboticslab. Pinned so the measurement is repeatable.
+  OKVIS2_REPO: https://github.com/smartroboticslab/okvis2.git
+  OKVIS2_COMMIT: a2ea00688cd10988aae7bd52ab7935ce9a657ec0
+  DATASET_URL: ${{ inputs.dataset_url || 'https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/main/V1_01_easy.zip' }}
+  SEQUENCE: ${{ inputs.sequence || 'V1_01_easy' }}
+
+jobs:
+  okvis2-mono:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake git unzip xvfb python3-numpy \
+            libeigen3-dev libopencv-dev libceres-dev libgoogle-glog-dev \
+            libgflags-dev libsuitesparse-dev libatlas-base-dev \
+            libboost-system-dev libboost-filesystem-dev \
+            libboost-program-options-dev libboost-serialization-dev \
+            libboost-thread-dev libboost-date-time-dev
+
+      - name: Fetch OKVIS2 at the pinned commit
+        run: |
+          git clone "$OKVIS2_REPO" okvis2
+          git -C okvis2 checkout "$OKVIS2_COMMIT"
+          # Ceres comes from the system package and googletest is not built,
+          # so only the submodules the app links are fetched.
+          git -C okvis2 submodule update --init external/brisk external/DBoW2 external/opengv
+
+      - name: Build okvis_app_synchronous
+        run: |
+          cmake -S okvis2 -B okvis2-build -DCMAKE_BUILD_TYPE=Release \
+            -DUSE_NN=OFF -DHAVE_LIBREALSENSE=OFF -DBUILD_ROS2=OFF \
+            -DUSE_SYSTEM_CERES=ON
+          cmake --build okvis2-build --target okvis_app_synchronous -j4
+          # The app refuses to start without its DBoW2 vocabulary next to it.
+          cp okvis2/resources/small_voc.yml.gz okvis2-build/
+          ls -l okvis2-build/okvis_app_synchronous
+
+      - name: Download sequence
+        run: |
+          mkdir -p data
+          curl -fsSL --retry 3 --retry-all-errors -o data/sequence.zip "$DATASET_URL"
+          # The default mirror serves V1_01_easy.zip from LFS; a truncated
+          # download used to fail silently later in unzip, so check the size.
+          if [ "$DATASET_URL" = "https://huggingface.co/datasets/pepijn223/euroc-mirror/resolve/main/V1_01_easy.zip" ]; then
+            size="$(stat -c%s data/sequence.zip)"
+            test "$size" -eq 1149702102 || { echo "download truncated: got $size bytes, expected 1149702102"; exit 1; }
+          fi
+          unzip -q data/sequence.zip -d data
+          rm data/sequence.zip
+          test -d "data/$SEQUENCE/mav0"
+          du -sh "data/$SEQUENCE"
+
+      - name: Evaluate
+        run: |
+          python3 tools/okvis2/run_okvis2_eval.py \
+            --app okvis2-build/okvis_app_synchronous \
+            --config tools/okvis2/euroc_mono.yaml \
+            --work eval \
+            "data/$SEQUENCE"
+          cat eval/results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: okvis2-eval
+          path: |
+            eval/results.*
+            eval/**/log.txt
