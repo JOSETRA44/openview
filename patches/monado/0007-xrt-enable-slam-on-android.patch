@@ -1,0 +1,26 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0abb1afb2..1f50a4cff 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -117,6 +117,12 @@ set(OPENCV_COMMON_COMPONENTS
+     video
+ 	)
+ 
++# The Android app build points OPENCV_ANDROID_SDK_DIR at an unpacked
++# OpenCV Android SDK; its config package lives per-ABI inside it.
++if(ANDROID AND OPENCV_ANDROID_SDK_DIR)
++	set(OpenCV_DIR "${OPENCV_ANDROID_SDK_DIR}/sdk/native/jni/abi-${ANDROID_ABI}")
++endif()
++
+ find_package(OpenCV QUIET COMPONENTS ${OPENCV_COMMON_COMPONENTS} calib3d features2d CONFIG)
+ if(NOT OpenCV_FOUND)
+ 	find_package(OpenCV COMPONENTS ${OPENCV_COMMON_COMPONENTS} calib features CONFIG)
+@@ -308,7 +314,7 @@ option_with_deps(XRT_FEATURE_RENDERDOC "Enable RenderDoc API" DEPENDS "RT_LIBRAR
+ option_with_deps(XRT_FEATURE_RERUN "Enable integration of Rerun SDK" DEFAULT OFF DEPENDS rerun_sdk_FOUND)
+ option_with_deps(XRT_FEATURE_SERVICE "Enable separate service module for OpenXR runtime" DEPENDS XRT_MODULE_IPC XRT_FEATURE_OPENXR)
+ option_with_deps(XRT_FEATURE_SERVICE_SYSTEMD "Enable systemd socket activation of the service" DEPENDS XRT_HAVE_SYSTEMD XRT_FEATURE_SERVICE)
+-option_with_deps(XRT_FEATURE_SLAM "Enable SLAM tracking support" DEPENDS XRT_HAVE_OPENCV XRT_HAVE_LINUX)
++option_with_deps(XRT_FEATURE_SLAM "Enable SLAM tracking support" DEPENDS XRT_HAVE_OPENCV "XRT_HAVE_LINUX OR ANDROID")
+ option(XRT_FEATURE_SSE2 "Build using SSE2 instructions, if building for 32-bit x86" ON)
+ option_with_deps(XRT_FEATURE_STEAMVR_PLUGIN "Build SteamVR plugin" DEPENDS "NOT ANDROID")
+ option_with_deps(XRT_FEATURE_TRACING "Enable debug tracing on supported platforms" DEFAULT OFF DEPENDS "XRT_HAVE_PERCETTO OR XRT_HAVE_TRACY")
