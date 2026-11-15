@@ -21,10 +21,10 @@ index 5ab60b07d..0624331a9 100644
  	list(APPEND ENABLED_DRIVERS android)
 diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
 new file mode 100644
-index 000000000..afb3a33ef
+index 000000000..c25bdfe4e
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.c
-@@ -0,0 +1,638 @@
+@@ -0,0 +1,640 @@
 +// Copyright 2026, OpenView contributors.
 +// SPDX-License-Identifier: BSL-1.0
 +/*!
@@ -55,6 +55,8 @@ index 000000000..afb3a33ef
 +
 +#include "xrt/xrt_frame.h"
 +#include "xrt/xrt_tracking.h"
++
++#include "math/m_api.h"
 +
 +#include "os/os_threading.h"
 +#include "os/os_time.h"
@@ -518,7 +520,7 @@ index 000000000..afb3a33ef
 +		return;
 +	}
 +	acfs->is_running = false;
-+	os_thread_helper_stop(&acfs->imu_thread);
++	os_thread_helper_stop_and_wait(&acfs->imu_thread);
 +	acfs_stop_camera(acfs);
 +}
 +
@@ -562,12 +564,12 @@ index 000000000..afb3a33ef
 +acfs_stream_start(struct xrt_fs *xfs,
 +                  struct xrt_frame_sink *xs,
 +                  enum xrt_fs_capture_type capture_type,
-+                  uint64_t descriptor_timestamp_ns)
++                  uint32_t descriptor_index)
 +{
 +	(void)xfs;
 +	(void)xs;
 +	(void)capture_type;
-+	(void)descriptor_timestamp_ns;
++	(void)descriptor_index;
 +	// Only the SLAM stream is meaningful for this source.
 +	return XRT_ERROR_NOT_IMPLEMENTED;
 +}
