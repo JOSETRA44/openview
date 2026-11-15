@@ -81,8 +81,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends glslang-tools libeigen3-dev
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
 
+      # OpenCV is a hard dependency of the SLAM tracker; Monado finds it
+      # in this SDK and links it statically into the service library.
+      - name: OpenCV Android SDK (SLAM tracker dependency)
+        run: |
+          curl -sSL https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-android-sdk.zip -o opencv.zip
+          unzip -q opencv.zip
+          ls OpenCV-android-sdk/sdk/native/jni/
+
       - name: Build APK
-        run: ./gradlew --no-daemon :app:assembleDebug :recorder:assembleDebug
+        run: ./gradlew --no-daemon -PopencvAndroidSdkDir="$PWD/OpenCV-android-sdk" :app:assembleDebug :recorder:assembleDebug
+
+      - name: Diagnose SLAM configuration
+        if: always()
+        run: |
+          find android/app/.cxx -name CMakeCache.txt -exec grep -h "XRT_FEATURE_SLAM\|XRT_HAVE_OPENCV\|OpenCV_DIR\|OPENCV_ANDROID_SDK_DIR" {} \; || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -93,6 +106,18 @@ jobs:
         with:
           name: sensor-recorder-debug-apk
           path: tools/sensor-recorder/app/build/outputs/apk/debug/*.apk
+
+      # A green build used to hide the tracker being compiled out; make
+      # its absence a hard failure instead.
+      - name: Verify the SLAM tracker is in the APK
+        run: |
+          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          unzip -p "$APK" lib/arm64-v8a/libopenview-service.so > /tmp/service.so
+          ok=1
+          grep -a -q "VIT_SYSTEM_LIBRARY_PATH" /tmp/service.so || { echo "MISSING: SLAM tracker strings in the service library"; ok=0; }
+          grep -a -q "SLAM_CAM_COUNT" /tmp/service.so || { echo "MISSING: SLAM_CAM_COUNT in the service library"; ok=0; }
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libbasalt.so" || { echo "MISSING: libbasalt.so in the APK"; ok=0; }
+          test "$ok" = 1
 
   # Independent client: iterate on the product without waiting for the native runtime build.
   experience:

@@ -55,6 +55,11 @@ android {
                     "-DANDROID_PLATFORM=${project.sharedMinSdk}",
                     "-DANDROID_STL=c++_static",
                     "-DANDROID_ARM_NEON=TRUE"
+                // Lets the SLAM tracker find OpenCV in its Android SDK;
+                // without it the tracker is silently left out of the build.
+                if (project.hasProperty('opencvAndroidSdkDir')) {
+                    arguments "-DOPENCV_ANDROID_SDK_DIR=${project.opencvAndroidSdkDir}"
+                }
                 targets "openxr_openview", "openview-service"
             }
             if (project.pythonBinary != null) {
