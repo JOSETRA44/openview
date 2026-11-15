@@ -97,15 +97,10 @@ jobs:
       - name: Build APK
         run: ./gradlew --no-daemon -PopencvAndroidSdkDir="$PWD/OpenCV-android-sdk" :app:assembleDebug :recorder:assembleDebug
 
-      # A green build used to hide the tracker being compiled out; make
-      # its absence a hard failure instead.
-      - name: Verify the SLAM tracker is in the APK
+      - name: Diagnose SLAM configuration
+        if: always()
         run: |
-          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
-          unzip -p "$APK" lib/arm64-v8a/libopenview-service.so > /tmp/service.so
-          grep -a -q "VIT_SYSTEM_LIBRARY_PATH" /tmp/service.so
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libopencv_core.so"
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libbasalt.so"
+          find android/app/.cxx -name CMakeCache.txt -exec grep -h "XRT_FEATURE_SLAM\|XRT_HAVE_OPENCV\|OpenCV_DIR\|OPENCV_ANDROID_SDK_DIR" {} \; || true
 
       - uses: actions/upload-artifact@v4
         with:
@@ -116,6 +111,18 @@ jobs:
         with:
           name: sensor-recorder-debug-apk
           path: tools/sensor-recorder/app/build/outputs/apk/debug/*.apk
+
+      # A green build used to hide the tracker being compiled out; make
+      # its absence a hard failure instead.
+      - name: Verify the SLAM tracker is in the APK
+        run: |
+          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          unzip -p "$APK" lib/arm64-v8a/libopenview-service.so > /tmp/service.so
+          ok=1
+          grep -a -q "VIT_SYSTEM_LIBRARY_PATH" /tmp/service.so || { echo "MISSING: SLAM tracker strings in the service library"; ok=0; }
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libopencv_core.so" || { echo "MISSING: libopencv_core.so in the APK"; ok=0; }
+          unzip -l "$APK" | grep -q "lib/arm64-v8a/libbasalt.so" || { echo "MISSING: libbasalt.so in the APK"; ok=0; }
+          test "$ok" = 1
 
   # Independent client: iterate on the product without waiting for the native runtime build.
   experience:
