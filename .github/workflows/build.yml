@@ -81,18 +81,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends glslang-tools libeigen3-dev
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
 
-      # OpenCV is a hard dependency of the SLAM tracker; its Android SDK
-      # provides both the CMake config Monado looks for and the shared
-      # libraries the APK must carry.
+      # OpenCV is a hard dependency of the SLAM tracker; Monado finds it
+      # in this SDK and links it statically into the service library.
       - name: OpenCV Android SDK (SLAM tracker dependency)
         run: |
           curl -sSL https://github.com/opencv/opencv/releases/download/4.12.0/opencv-4.12.0-android-sdk.zip -o opencv.zip
           unzip -q opencv.zip
-          for abi in arm64-v8a x86_64; do
-            mkdir -p "android/app/src/main/jniLibs/$abi"
-            cp OpenCV-android-sdk/sdk/native/libs/$abi/libopencv_*.so "android/app/src/main/jniLibs/$abi/"
-          done
-          ls android/app/src/main/jniLibs/arm64-v8a/
+          ls OpenCV-android-sdk/sdk/native/jni/
 
       - name: Build APK
         run: ./gradlew --no-daemon -PopencvAndroidSdkDir="$PWD/OpenCV-android-sdk" :app:assembleDebug :recorder:assembleDebug
@@ -120,7 +115,7 @@ jobs:
           unzip -p "$APK" lib/arm64-v8a/libopenview-service.so > /tmp/service.so
           ok=1
           grep -a -q "VIT_SYSTEM_LIBRARY_PATH" /tmp/service.so || { echo "MISSING: SLAM tracker strings in the service library"; ok=0; }
-          unzip -l "$APK" | grep -q "lib/arm64-v8a/libopencv_core.so" || { echo "MISSING: libopencv_core.so in the APK"; ok=0; }
+          grep -a -q "SLAM_CAM_COUNT" /tmp/service.so || { echo "MISSING: SLAM_CAM_COUNT in the service library"; ok=0; }
           unzip -l "$APK" | grep -q "lib/arm64-v8a/libbasalt.so" || { echo "MISSING: libbasalt.so in the APK"; ok=0; }
           test "$ok" = 1
 
