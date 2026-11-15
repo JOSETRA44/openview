@@ -1,0 +1,90 @@
+{
+  "value0": {
+    "comment": "Nominal phone calibration, candidate rotation: rear_y_neg. Intrinsics from declared focal/sensor size; distortion zero; extrinsics unmeasured. For the first tracking test only.",
+    "T_imu_cam": [
+      {
+        "px": 0.0,
+        "py": 0.0,
+        "pz": 0.0,
+        "qx": -0.7071067811865475,
+        "qy": 0.7071067811865476,
+        "qz": 0.0,
+        "qw": 0.0
+      }
+    ],
+    "intrinsics": [
+      {
+        "camera_type": "pinhole-radtan8",
+        "intrinsics": {
+          "fx": 503.9,
+          "fy": 503.3,
+          "cx": 319.5,
+          "cy": 239.5,
+          "k1": 0.0,
+          "k2": 0.0,
+          "p1": 0.0,
+          "p2": 0.0,
+          "k3": 0.0,
+          "k4": 0.0,
+          "k5": 0.0,
+          "k6": 0.0,
+          "rpmax": 0.0
+        }
+      }
+    ],
+    "resolution": [
+      [
+        640,
+        480
+      ]
+    ],
+    "calib_accel_bias": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "calib_gyro_bias": [
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "imu_update_rate": 400.0,
+    "accel_noise_std": [
+      0.016,
+      0.016,
+      0.016
+    ],
+    "gyro_noise_std": [
+      0.000282,
+      0.000282,
+      0.000282
+    ],
+    "accel_bias_std": [
+      0.001,
+      0.001,
+      0.001
+    ],
+    "gyro_bias_std": [
+      0.0001,
+      0.0001,
+      0.0001
+    ],
+    "cam_time_offset_ns": 0,
+    "vignette": []
+  }
+}

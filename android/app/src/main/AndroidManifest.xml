@@ -11,6 +11,12 @@
         android:name="android.permission.HIGH_SAMPLING_RATE_SENSORS"
         tools:ignore="HighSamplingRate" />
 
+    <!-- The SLAM frameserver opens the back camera from the runtime process. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
     <queries>
         <package android:name="dev.openview.experience" />
     </queries>

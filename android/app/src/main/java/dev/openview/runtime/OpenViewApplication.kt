@@ -17,7 +17,36 @@ import dagger.hilt.android.HiltAndroidApp
 class OpenViewApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        extractSlamAssets()
         warnIfOverlayPermissionMissing()
+    }
+
+    /*
+     * The SLAM tracker reads its calibration and VIO configuration from
+     * plain files, so the copies bundled in assets are extracted to the
+     * files dir and a SLAM config pointing at them is written next to
+     * them. The native factory looks for that config at a fixed path
+     * under the package's files dir. Runs on every start: the files are
+     * tiny and this keeps them in step with the APK after an update.
+     */
+    private fun extractSlamAssets() {
+        try {
+            val slamDir = java.io.File(filesDir, "slam")
+            slamDir.mkdirs()
+            for (name in listOf("calib.json", "vio_config.json")) {
+                assets.open("slam/$name").use { input ->
+                    java.io.File(slamDir, name).outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+            val calib = java.io.File(slamDir, "calib.json").absolutePath
+            val vioConfig = java.io.File(slamDir, "vio_config.json").absolutePath
+            java.io.File(slamDir, "slam_config.txt")
+                .writeText("cam-calib=\"$calib\"\nconfig-path=\"$vioConfig\"\n")
+        } catch (e: Exception) {
+            android.util.Log.e("OpenView", "SLAM asset extraction failed", e)
+        }
     }
 
     /*

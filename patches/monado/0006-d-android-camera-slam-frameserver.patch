@@ -1,0 +1,811 @@
+diff --git a/src/xrt/drivers/CMakeLists.txt b/src/xrt/drivers/CMakeLists.txt
+index 5ab60b07d..0624331a9 100644
+--- a/src/xrt/drivers/CMakeLists.txt
++++ b/src/xrt/drivers/CMakeLists.txt
+@@ -510,6 +510,7 @@ if(XRT_BUILD_DRIVER_ANDROID)
+ 	add_library(
+ 		drv_android STATIC android/android_prober.c android/android_prober.h
+ 				   android/android_sensors.c android/android_sensors.h
++				   android/android_camera_fs.c android/android_camera_fs.h
+ 		)
+ 	target_link_libraries(
+ 		drv_android
+@@ -519,6 +520,8 @@ if(XRT_BUILD_DRIVER_ANDROID)
+ 			aux_os
+ 			aux_android
+ 			${ANDROID_LIBRARY}
++			camera2ndk
++			mediandk
+ 		)
+ 	target_link_libraries(drv_android PRIVATE xrt-external-cardboard)
+ 	list(APPEND ENABLED_DRIVERS android)
+diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
+new file mode 100644
+index 000000000..c25bdfe4e
+--- /dev/null
++++ b/src/xrt/drivers/android/android_camera_fs.c
+@@ -0,0 +1,640 @@
++// Copyright 2026, OpenView contributors.
++// SPDX-License-Identifier: BSL-1.0
++/*!
++ * @file
++ * @brief  Frameserver that feeds the SLAM tracker from the phone's own
++ *         camera and IMU.
++ *
++ * The desktop SLAM sources (EuRoC player, RealSense) pair a frameserver
++ * with the VIT tracker through the prober's tracking factory. Android has
++ * no video device to enumerate, so this frameserver wraps the NDK camera
++ * and sensor APIs directly: AImageReader delivers YUV_420_888 frames whose
++ * Y plane is the grayscale image the tracker consumes, and a sensor thread
++ * mirrors the one in android_sensors.c, except that samples are pushed to
++ * the SLAM sinks in the IMU's own axes. The axis convention deliberately
++ * matches the sensor-recorder captures that the phone calibration
++ * candidates were fitted against, not the permuted frame the 3DoF fusion
++ * uses for display.
++ *
++ * Camera and sensor timestamps both live on CLOCK_BOOTTIME while Monado
++ * timepoints are CLOCK_MONOTONIC; both streams are converted with the
++ * same resampled-offset helper android_sensors.c uses, so camera and IMU
++ * stay in one domain.
++ *
++ * @ingroup drv_android
++ */
++
++#include "android_camera_fs.h"
++
++#include "xrt/xrt_frame.h"
++#include "xrt/xrt_tracking.h"
++
++#include "math/m_api.h"
++
++#include "os/os_threading.h"
++#include "os/os_time.h"
++
++#include "util/u_frame.h"
++#include "util/u_frameserver.h"
++#include "util/u_logging.h"
++#include "util/u_misc.h"
++
++#include <xrt/xrt_config_android.h>
++
++#include <android/looper.h>
++#include <android/native_window.h>
++#include <android/sensor.h>
++
++#include <camera/NdkCameraCaptureSession.h>
++#include <camera/NdkCameraDevice.h>
++#include <camera/NdkCameraManager.h>
++#include <camera/NdkCameraMetadata.h>
++#include <camera/NdkCameraMetadataTags.h>
++#include <camera/NdkCaptureRequest.h>
++
++#include <media/NdkImageReader.h>
++
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++
++
++/*
++ *
++ * Defines and helpers.
++ *
++ */
++
++#define CAM_WIDTH 640
++#define CAM_HEIGHT 480
++#define CAM_MAX_IMAGES 4
++
++#define ACFS_LOOPER_ID 3
++
++//! Shortest sensor period we ask for; the queue clamps to the sensor's own minimum delay.
++#define IMU_RATE_USEC 2500
++
++
++/*!
++ * Sensor events and camera frames are stamped on the CLOCK_BOOTTIME base
++ * while the rest of Monado uses CLOCK_MONOTONIC. The two only drift apart
++ * while the device is suspended, so the offset is resampled on every call
++ * instead of being cached. Same helper as in android_sensors.c.
++ */
++static int64_t
++acfs_time_to_monotonic_ns(int64_t boottime_ns)
++{
++	struct timespec boot;
++	struct timespec mono;
++	if (clock_gettime(CLOCK_BOOTTIME, &boot) != 0 || clock_gettime(CLOCK_MONOTONIC, &mono) != 0) {
++		return boottime_ns;
++	}
++
++	int64_t offset_ns = (int64_t)(boot.tv_sec - mono.tv_sec) * 1000000000LL + (boot.tv_nsec - mono.tv_nsec);
++	return boottime_ns - offset_ns;
++}
++
++
++/*
++ *
++ * The frameserver struct.
++ *
++ */
++
++struct android_camera_fs
++{
++	struct xrt_fs base;
++	struct xrt_frame_node node;
++	struct xrt_frame_context *xfctx;
++
++	struct xrt_slam_sinks sinks;
++	bool is_running;
++
++	// Camera state, only valid while running.
++	ACameraManager *manager;
++	ACameraDevice *device;
++	ACameraCaptureSession *session;
++	ACaptureRequest *request;
++	ACameraOutputTarget *target;
++	ACaptureSessionOutput *session_output;
++	ACaptureSessionOutputContainer *outputs;
++	AImageReader *reader;
++
++	// IMU state.
++	struct os_thread_helper imu_thread;
++	struct os_mutex imu_lock;
++	struct xrt_vec3 last_accel;
++	bool have_accel;
++};
++
++static struct android_camera_fs *
++android_camera_fs(struct xrt_fs *xfs)
++{
++	return (struct android_camera_fs *)xfs;
++}
++
++
++/*
++ *
++ * Camera callbacks.
++ *
++ */
++
++static void
++on_device_disconnected(void *context, ACameraDevice *device)
++{
++	(void)context;
++	(void)device;
++	U_LOG_W("Android camera disconnected");
++}
++
++static void
++on_device_error(void *context, ACameraDevice *device, int error)
++{
++	(void)context;
++	(void)device;
++	U_LOG_E("Android camera error %d", error);
++}
++
++static void
++on_session_closed(void *context, ACameraCaptureSession *session)
++{
++	(void)context;
++	(void)session;
++}
++
++static void
++on_session_ready(void *context, ACameraCaptureSession *session)
++{
++	(void)context;
++	(void)session;
++}
++
++static void
++on_session_active(void *context, ACameraCaptureSession *session)
++{
++	(void)context;
++	(void)session;
++}
++
++static void
++on_image_available(void *context, AImageReader *reader)
++{
++	struct android_camera_fs *acfs = (struct android_camera_fs *)context;
++
++	AImage *image = NULL;
++	if (AImageReader_acquireNextImage(reader, &image) != AMEDIA_OK || image == NULL) {
++		return;
++	}
++
++	int32_t width = 0;
++	int32_t height = 0;
++	AImage_getWidth(image, &width);
++	AImage_getHeight(image, &height);
++
++	uint8_t *y_plane = NULL;
++	int y_len = 0;
++	int y_stride = 0;
++	AImage_getPlaneData(image, 0, &y_plane, &y_len);
++	AImage_getPlaneRowStride(image, 0, &y_stride);
++
++	int64_t timestamp = 0;
++	AImage_getTimestamp(image, &timestamp);
++
++	if (width == CAM_WIDTH && height == CAM_HEIGHT && y_plane != NULL && acfs->sinks.cams[0] != NULL) {
++		struct xrt_frame *xf = NULL;
++		u_frame_create_one_off(XRT_FORMAT_R8, CAM_WIDTH, CAM_HEIGHT, &xf);
++		if (xf != NULL) {
++			for (int row = 0; row < CAM_HEIGHT; row++) {
++				memcpy(xf->data + (size_t)row * xf->stride, y_plane + (size_t)row * (size_t)y_stride,
++				       CAM_WIDTH);
++			}
++			// The sensor timestamp marks the start of exposure; the
++			// calibration's time offset absorbs the constant part of
++			// the rolling-shutter readout (29 ms measured on device).
++			xf->timestamp = acfs_time_to_monotonic_ns(timestamp);
++			xf->source_timestamp = xf->timestamp;
++			xf->source_id = ANDROID_CAMERA_FS_SOURCE_ID;
++
++			xrt_sink_push_frame(acfs->sinks.cams[0], xf);
++			xrt_frame_reference(&xf, NULL);
++		}
++	}
++
++	AImage_delete(image);
++}
++
++
++/*
++ *
++ * IMU thread.
++ *
++ */
++
++static void
++acfs_push_imu(struct android_camera_fs *acfs, const ASensorEvent *event)
++{
++	if (acfs->sinks.imus[0] == NULL) {
++		return;
++	}
++
++	os_mutex_lock(&acfs->imu_lock);
++	struct xrt_vec3 accel = acfs->last_accel;
++	bool have_accel = acfs->have_accel;
++	os_mutex_unlock(&acfs->imu_lock);
++
++	if (!have_accel) {
++		return;
++	}
++
++	struct xrt_imu_sample sample = {0};
++	sample.timestamp_ns = acfs_time_to_monotonic_ns(event->timestamp);
++	sample.accel_m_s2.x = (double)accel.x;
++	sample.accel_m_s2.y = (double)accel.y;
++	sample.accel_m_s2.z = (double)accel.z;
++	sample.gyro_rad_secs.x = (double)event->vector.x;
++	sample.gyro_rad_secs.y = (double)event->vector.y;
++	sample.gyro_rad_secs.z = (double)event->vector.z;
++
++	xrt_sink_push_imu(acfs->sinks.imus[0], &sample);
++}
++
++static void *
++acfs_imu_thread(void *ptr)
++{
++	struct android_camera_fs *acfs = (struct android_camera_fs *)ptr;
++	static const int max_wait_milliseconds = 100;
++
++#if __ANDROID_API__ >= 26
++	ASensorManager *sensor_manager = ASensorManager_getInstanceForPackage(XRT_ANDROID_PACKAGE);
++#else
++	ASensorManager *sensor_manager = ASensorManager_getInstance();
++#endif
++
++	const ASensor *accelerometer = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_ACCELEROMETER);
++	const ASensor *gyroscope = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_GYROSCOPE);
++	if (accelerometer == NULL || gyroscope == NULL) {
++		U_LOG_E("Android camera frameserver: accelerometer or gyroscope missing");
++		return NULL;
++	}
++
++	ALooper *looper = ALooper_forThread();
++	if (looper == NULL) {
++		looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
++	}
++
++	ASensorEventQueue *event_queue =
++	    ASensorManager_createEventQueue(sensor_manager, looper, ACFS_LOOPER_ID, NULL, NULL);
++
++	int32_t accel_rate = MAX(IMU_RATE_USEC, ASensor_getMinDelay(accelerometer));
++	int32_t gyro_rate = MAX(IMU_RATE_USEC, ASensor_getMinDelay(gyroscope));
++	ASensorEventQueue_enableSensor(event_queue, accelerometer);
++	ASensorEventQueue_setEventRate(event_queue, accelerometer, accel_rate);
++	ASensorEventQueue_enableSensor(event_queue, gyroscope);
++	ASensorEventQueue_setEventRate(event_queue, gyroscope, gyro_rate);
++
++	while (os_thread_helper_is_running(&acfs->imu_thread)) {
++		int num_events = 0;
++		const int looper_id = ALooper_pollOnce(max_wait_milliseconds, NULL, &num_events, NULL);
++		if (looper_id != ACFS_LOOPER_ID || num_events <= 0) {
++			continue;
++		}
++
++		ASensorEvent event;
++		while (ASensorEventQueue_getEvents(event_queue, &event, 1) > 0) {
++			switch (event.type) {
++			case ASENSOR_TYPE_ACCELEROMETER: {
++				os_mutex_lock(&acfs->imu_lock);
++				acfs->last_accel.x = event.acceleration.x;
++				acfs->last_accel.y = event.acceleration.y;
++				acfs->last_accel.z = event.acceleration.z;
++				acfs->have_accel = true;
++				os_mutex_unlock(&acfs->imu_lock);
++				break;
++			}
++			case ASENSOR_TYPE_GYROSCOPE: acfs_push_imu(acfs, &event); break;
++			default: break;
++			}
++		}
++	}
++
++	ASensorEventQueue_disableSensor(event_queue, accelerometer);
++	ASensorEventQueue_disableSensor(event_queue, gyroscope);
++	ASensorManager_destroyEventQueue(sensor_manager, event_queue);
++	return NULL;
++}
++
++
++
++/*
++ *
++ * Camera open/close.
++ *
++ */
++
++static bool
++acfs_pick_back_camera(struct android_camera_fs *acfs, char **out_id)
++{
++	ACameraIdList *id_list = NULL;
++	if (ACameraManager_getCameraIdList(acfs->manager, &id_list) != ACAMERA_OK) {
++		return false;
++	}
++
++	bool found = false;
++	for (int i = 0; i < id_list->numCameras && !found; i++) {
++		ACameraMetadata *chars = NULL;
++		if (ACameraManager_getCameraCharacteristics(acfs->manager, id_list->cameraIds[i], &chars) != ACAMERA_OK) {
++			continue;
++		}
++		ACameraMetadata_const_entry entry = {0};
++		if (ACameraMetadata_getConstEntry(chars, ACAMERA_LENS_FACING, &entry) == ACAMERA_OK &&
++		    entry.count >= 1 && entry.data.u8[0] == ACAMERA_LENS_FACING_BACK) {
++			*out_id = strdup(id_list->cameraIds[i]);
++			found = *out_id != NULL;
++		}
++		ACameraMetadata_free(chars);
++	}
++
++	ACameraManager_deleteCameraIdList(id_list);
++	return found;
++}
++
++static bool
++acfs_start_camera(struct android_camera_fs *acfs)
++{
++	acfs->manager = ACameraManager_create();
++	if (acfs->manager == NULL) {
++		U_LOG_E("Android camera frameserver: ACameraManager_create failed");
++		return false;
++	}
++
++	char *camera_id = NULL;
++	if (!acfs_pick_back_camera(acfs, &camera_id)) {
++		U_LOG_E("Android camera frameserver: no back camera found");
++		return false;
++	}
++
++	static AImageReader_ImageListener listener;
++	listener.context = acfs;
++	listener.onImageAvailable = on_image_available;
++
++	media_status_t mret = AImageReader_new(CAM_WIDTH, CAM_HEIGHT, AIMAGE_FORMAT_YUV_420_888, CAM_MAX_IMAGES,
++	                                       &acfs->reader);
++	if (mret != AMEDIA_OK) {
++		U_LOG_E("Android camera frameserver: AImageReader_new failed (%d)", (int)mret);
++		free(camera_id);
++		return false;
++	}
++	AImageReader_setImageListener(acfs->reader, &listener);
++
++	ANativeWindow *window = NULL;
++	AImageReader_getWindow(acfs->reader, &window);
++
++	static ACameraDevice_StateCallbacks device_callbacks;
++	device_callbacks.context = acfs;
++	device_callbacks.onDisconnected = on_device_disconnected;
++	device_callbacks.onError = on_device_error;
++
++	camera_status_t cret = ACameraManager_openCamera(acfs->manager, camera_id, &device_callbacks, &acfs->device);
++	free(camera_id);
++	if (cret != ACAMERA_OK || acfs->device == NULL) {
++		U_LOG_E("Android camera frameserver: openCamera failed (%d); camera permission missing?", (int)cret);
++		return false;
++	}
++
++	ACaptureSessionOutputContainer_create(&acfs->outputs);
++	ACaptureSessionOutput_create(window, &acfs->session_output);
++	ACaptureSessionOutputContainer_add(acfs->outputs, acfs->session_output);
++
++	static ACameraCaptureSession_stateCallbacks session_callbacks;
++	session_callbacks.context = acfs;
++	session_callbacks.onClosed = on_session_closed;
++	session_callbacks.onReady = on_session_ready;
++	session_callbacks.onActive = on_session_active;
++
++	cret = ACameraDevice_createCaptureSession(acfs->device, acfs->outputs, &session_callbacks, &acfs->session);
++	if (cret != ACAMERA_OK || acfs->session == NULL) {
++		U_LOG_E("Android camera frameserver: createCaptureSession failed (%d)", (int)cret);
++		return false;
++	}
++
++	ACameraDevice_createCaptureRequest(acfs->device, TEMPLATE_RECORD, &acfs->request);
++	ACameraOutputTarget_create(window, &acfs->target);
++	ACaptureRequest_addTarget(acfs->request, acfs->target);
++
++	cret = ACameraCaptureSession_setRepeatingRequest(acfs->session, NULL, 1, &acfs->request, NULL);
++	if (cret != ACAMERA_OK) {
++		U_LOG_E("Android camera frameserver: setRepeatingRequest failed (%d)", (int)cret);
++		return false;
++	}
++
++	return true;
++}
++
++static void
++acfs_stop_camera(struct android_camera_fs *acfs)
++{
++	if (acfs->session != NULL) {
++		ACameraCaptureSession_stopRepeating(acfs->session);
++		ACameraCaptureSession_abortCaptures(acfs->session);
++		ACameraCaptureSession_close(acfs->session);
++		acfs->session = NULL;
++	}
++	if (acfs->request != NULL) {
++		ACaptureRequest_free(acfs->request);
++		acfs->request = NULL;
++	}
++	if (acfs->target != NULL) {
++		ACameraOutputTarget_free(acfs->target);
++		acfs->target = NULL;
++	}
++	if (acfs->session_output != NULL) {
++		ACaptureSessionOutput_free(acfs->session_output);
++		acfs->session_output = NULL;
++	}
++	if (acfs->outputs != NULL) {
++		ACaptureSessionOutputContainer_free(acfs->outputs);
++		acfs->outputs = NULL;
++	}
++	if (acfs->device != NULL) {
++		ACameraDevice_close(acfs->device);
++		acfs->device = NULL;
++	}
++	if (acfs->reader != NULL) {
++		AImageReader_setImageListener(acfs->reader, NULL);
++		AImageReader_delete(acfs->reader);
++		acfs->reader = NULL;
++	}
++	if (acfs->manager != NULL) {
++		ACameraManager_delete(acfs->manager);
++		acfs->manager = NULL;
++	}
++}
++
++static bool
++acfs_start(struct android_camera_fs *acfs)
++{
++	if (acfs->is_running) {
++		return true;
++	}
++	if (!acfs_start_camera(acfs)) {
++		acfs_stop_camera(acfs);
++		return false;
++	}
++	os_thread_helper_start(&acfs->imu_thread, acfs_imu_thread, acfs);
++	acfs->is_running = true;
++	return true;
++}
++
++static void
++acfs_stop(struct android_camera_fs *acfs)
++{
++	if (!acfs->is_running) {
++		return;
++	}
++	acfs->is_running = false;
++	os_thread_helper_stop_and_wait(&acfs->imu_thread);
++	acfs_stop_camera(acfs);
++}
++
++
++/*
++ *
++ * Frameserver functions.
++ *
++ */
++
++static xrt_result_t
++acfs_enumerate_modes(struct xrt_fs *xfs, struct xrt_fs_mode **out_modes, uint32_t *out_count)
++{
++	(void)xfs;
++
++	struct xrt_fs_mode *modes = U_TYPED_ARRAY_CALLOC(struct xrt_fs_mode, 1);
++	if (modes == NULL) {
++		return XRT_ERROR_ALLOCATION;
++	}
++
++	modes[0].width = CAM_WIDTH;
++	modes[0].height = CAM_HEIGHT;
++	modes[0].format = XRT_FORMAT_R8;
++	modes[0].stereo_format = XRT_STEREO_FORMAT_NONE;
++
++	*out_modes = modes;
++	*out_count = 1;
++	return XRT_SUCCESS;
++}
++
++static xrt_result_t
++acfs_configure_capture(struct xrt_fs *xfs, struct xrt_fs_capture_parameters *cp)
++{
++	(void)xfs;
++	(void)cp;
++	// No adjustable parameters yet; the mode is fixed.
++	return XRT_SUCCESS;
++}
++
++static xrt_result_t
++acfs_stream_start(struct xrt_fs *xfs,
++                  struct xrt_frame_sink *xs,
++                  enum xrt_fs_capture_type capture_type,
++                  uint32_t descriptor_index)
++{
++	(void)xfs;
++	(void)xs;
++	(void)capture_type;
++	(void)descriptor_index;
++	// Only the SLAM stream is meaningful for this source.
++	return XRT_ERROR_NOT_IMPLEMENTED;
++}
++
++static xrt_result_t
++acfs_slam_stream_start(struct xrt_fs *xfs, struct xrt_slam_sinks *sinks)
++{
++	struct android_camera_fs *acfs = android_camera_fs(xfs);
++	acfs->sinks = *sinks;
++	return acfs_start(acfs) ? XRT_SUCCESS : XRT_ERROR_DEVICE_CREATION_FAILED;
++}
++
++static xrt_result_t
++acfs_stream_stop(struct xrt_fs *xfs)
++{
++	struct android_camera_fs *acfs = android_camera_fs(xfs);
++	acfs_stop(acfs);
++	return XRT_SUCCESS;
++}
++
++static xrt_result_t
++acfs_is_running(struct xrt_fs *xfs, bool *out_is_running)
++{
++	struct android_camera_fs *acfs = android_camera_fs(xfs);
++	*out_is_running = acfs->is_running;
++	return XRT_SUCCESS;
++}
++
++
++/*
++ *
++ * Frame node functions.
++ *
++ */
++
++static void
++acfs_break_apart(struct xrt_frame_node *node)
++{
++	struct android_camera_fs *acfs = container_of(node, struct android_camera_fs, node);
++	acfs_stop(acfs);
++}
++
++static void
++acfs_destroy(struct xrt_frame_node *node)
++{
++	struct android_camera_fs *acfs = container_of(node, struct android_camera_fs, node);
++	acfs_stop(acfs);
++	os_thread_helper_destroy(&acfs->imu_thread);
++	os_mutex_destroy(&acfs->imu_lock);
++	free(acfs);
++}
++
++
++/*
++ *
++ * Create.
++ *
++ */
++
++struct xrt_fs *
++android_camera_fs_create(struct xrt_frame_context *xfctx)
++{
++	struct android_camera_fs *acfs = U_TYPED_CALLOC(struct android_camera_fs);
++	if (acfs == NULL) {
++		return NULL;
++	}
++
++	acfs->xfctx = xfctx;
++	os_mutex_init(&acfs->imu_lock);
++	os_thread_helper_init(&acfs->imu_thread);
++
++	struct xrt_fs *xfs = &acfs->base;
++	u_frameserver_populate_function_pointers(xfs);
++	xfs->enumerate_modes = acfs_enumerate_modes;
++	xfs->configure_capture = acfs_configure_capture;
++	xfs->stream_start = acfs_stream_start;
++	xfs->slam_stream_start = acfs_slam_stream_start;
++	xfs->stream_stop = acfs_stream_stop;
++	xfs->is_running = acfs_is_running;
++
++	(void)snprintf(xfs->name, sizeof(xfs->name), "Android Camera");
++	(void)snprintf(xfs->product, sizeof(xfs->product), "Android Camera Product");
++	(void)snprintf(xfs->manufacturer, sizeof(xfs->manufacturer), "Android");
++	(void)snprintf(xfs->serial, sizeof(xfs->serial), "Android Camera Serial");
++	xfs->source_id = ANDROID_CAMERA_FS_SOURCE_ID;
++
++	struct xrt_frame_node *xfn = &acfs->node;
++	xfn->break_apart = acfs_break_apart;
++	xfn->destroy = acfs_destroy;
++
++	xrt_frame_context_add(xfctx, &acfs->node);
++
++	U_LOG_I("Android camera frameserver created");
++	return xfs;
++}
+diff --git a/src/xrt/drivers/android/android_camera_fs.h b/src/xrt/drivers/android/android_camera_fs.h
+new file mode 100644
+index 000000000..65011151b
+--- /dev/null
++++ b/src/xrt/drivers/android/android_camera_fs.h
+@@ -0,0 +1,34 @@
++// Copyright 2026, OpenView contributors.
++// SPDX-License-Identifier: BSL-1.0
++/*!
++ * @file
++ * @brief  Frameserver that feeds the SLAM tracker from the phone's own
++ *         camera (NDK Camera2) and IMU (NDK sensors).
++ * @ingroup drv_android
++ */
++
++#pragma once
++
++#include "xrt/xrt_frameserver.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/*!
++ * Identifies frames coming from this frameserver; the tracking factory
++ * checks it against the frameserver it opened, like it does for the
++ * EuRoC and RealSense sources.
++ */
++#define ANDROID_CAMERA_FS_SOURCE_ID 0xAC150001
++
++/*!
++ * Create the Android camera frameserver. The camera itself is only opened
++ * when streaming starts. Returns NULL on allocation failure.
++ */
++struct xrt_fs *
++android_camera_fs_create(struct xrt_frame_context *xfctx);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/src/xrt/state_trackers/prober/p_prober.c b/src/xrt/state_trackers/prober/p_prober.c
+index dc318698a..30df9dfb3 100644
+--- a/src/xrt/state_trackers/prober/p_prober.c
++++ b/src/xrt/state_trackers/prober/p_prober.c
+@@ -43,6 +43,10 @@
+ #include "realsense/rs_interface.h"
+ #endif
+ 
++#ifdef XRT_BUILD_DRIVER_ANDROID
++#include "android/android_camera_fs.h"
++#endif
++
+ #include <stdio.h>
+ #include <string.h>
+ #include <assert.h>
+@@ -62,6 +66,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(qwerty_combine, "QWERTY_COMBINE", false)
+ DEBUG_GET_ONCE_OPTION(vf_path, "VF_PATH", NULL)
+ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
+ DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
+ 
+ 
+ /*
+@@ -1310,6 +1315,13 @@ p_open_video_device(struct xrt_prober *xp,
+ 	}
+ #endif
+ 
++#if defined(XRT_BUILD_DRIVER_ANDROID)
++	if (debug_get_bool_option_android_slam_camera()) {
++		*out_xfs = android_camera_fs_create(xfctx);
++		return (*out_xfs != NULL) ? 0 : -1;
++	}
++#endif
++
+ #if defined(XRT_HAVE_V4L2)
+ 	if (pdev->num_v4ls == 0) {
+ 		return -1;
+diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
+index d169b9afc..ad1bf884a 100644
+--- a/src/xrt/state_trackers/prober/p_tracking.c
++++ b/src/xrt/state_trackers/prober/p_tracking.c
+@@ -39,6 +39,13 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
+ DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
+ #endif
+ 
++#ifdef XRT_BUILD_DRIVER_ANDROID
++#include "android/android_camera_fs.h"
++#include "util/u_debug.h"
++#include <xrt/xrt_config_android.h>
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
++#endif
++
+ /*
+  *
+  * Structs and defines.
+@@ -281,6 +288,48 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
+ 	}
+ #endif
+ 
++	// SLAM tracker with Android camera frameserver
++
++#ifdef XRT_BUILD_DRIVER_ANDROID
++	if (debug_get_bool_option_android_slam_camera()) {
++		struct xrt_slam_sinks empty_sinks = {0};
++		struct xrt_slam_sinks *sinks = &empty_sinks;
++
++		xrt_prober_open_video_device(&fact->p->base, NULL, &fact->xfctx, &fact->xfs);
++		if (fact->xfs == NULL) {
++			return false;
++		}
++		assert(fact->xfs->source_id == ANDROID_CAMERA_FS_SOURCE_ID &&
++		       "xfs is not the Android camera, unsynced open_video_device?");
++
++#ifdef XRT_FEATURE_SLAM
++		struct t_slam_tracker_config st_config;
++		t_slam_fill_default_config(&st_config);
++		st_config.cam_count = 1;
++
++		// The backend ships inside the runtime APK, so dlopen finds it by
++		// soname in the app's native library directory. The app extracts
++		// the SLAM config into its files dir at a fixed path on startup.
++		st_config.vit_system_library_path = "libbasalt.so";
++		static char slam_config_path[256];
++		(void)snprintf(slam_config_path, sizeof(slam_config_path), "/data/data/%s/files/slam/slam_config.txt",
++		               XRT_ANDROID_PACKAGE);
++		st_config.slam_config = slam_config_path;
++
++		int ret = t_slam_create(&fact->xfctx, &st_config, &fact->xts, &sinks);
++		if (ret != 0) {
++			U_LOG_W("Unable to initialize SLAM tracking, the Android device will not be tracked");
++		}
++#else
++		U_LOG_W("SLAM tracking support is disabled, the Android device will not be tracked");
++#endif
++
++		xrt_fs_slam_stream_start(fact->xfs, sinks);
++
++		return true;
++	}
++#endif
++
+ 	// SLAM tracker with RealSense frameserver
+ 
+ #ifdef XRT_BUILD_DRIVER_REALSENSE
