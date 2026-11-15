@@ -56,6 +56,13 @@ class HomeActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // The SLAM frameserver needs the camera granted before the runtime
+        // service tries to open it; without it tracking stays 3DoF.
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(android.Manifest.permission.CAMERA), 1)
+        }
         window.statusBarColor = Color.rgb(13, 23, 30)
         window.navigationBarColor = Color.rgb(13, 23, 30)
         val column = LinearLayout(this).apply {

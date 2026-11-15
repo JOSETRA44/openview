@@ -743,23 +743,24 @@ index dc318698a..30df9dfb3 100644
  	if (pdev->num_v4ls == 0) {
  		return -1;
 diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
-index d169b9afc..00993c0fd 100644
+index d169b9afc..ad1bf884a 100644
 --- a/src/xrt/state_trackers/prober/p_tracking.c
 +++ b/src/xrt/state_trackers/prober/p_tracking.c
-@@ -39,6 +39,12 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
+@@ -39,6 +39,13 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
  DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
  #endif
  
 +#ifdef XRT_BUILD_DRIVER_ANDROID
 +#include "android/android_camera_fs.h"
 +#include "util/u_debug.h"
++#include <xrt/xrt_config_android.h>
 +DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
 +#endif
 +
  /*
   *
   * Structs and defines.
-@@ -281,6 +287,39 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
+@@ -281,6 +288,48 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
  	}
  #endif
  
@@ -781,6 +782,15 @@ index d169b9afc..00993c0fd 100644
 +		struct t_slam_tracker_config st_config;
 +		t_slam_fill_default_config(&st_config);
 +		st_config.cam_count = 1;
++
++		// The backend ships inside the runtime APK, so dlopen finds it by
++		// soname in the app's native library directory. The app extracts
++		// the SLAM config into its files dir at a fixed path on startup.
++		st_config.vit_system_library_path = "libbasalt.so";
++		static char slam_config_path[256];
++		(void)snprintf(slam_config_path, sizeof(slam_config_path), "/data/data/%s/files/slam/slam_config.txt",
++		               XRT_ANDROID_PACKAGE);
++		st_config.slam_config = slam_config_path;
 +
 +		int ret = t_slam_create(&fact->xfctx, &st_config, &fact->xts, &sinks);
 +		if (ret != 0) {

@@ -103,6 +103,11 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PWD/deps"
           cmake --build build-basalt --target basalt -j4
           find build-basalt -name "libbasalt.so*" -exec file {} \;
+          # The unstripped library carries every symbol (~284 MB); the APK
+          # only needs the dynamic ones.
+          "$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" \
+            --strip-unneeded build-basalt/libbasalt.so
+          ls -la build-basalt/libbasalt.so
 
       - uses: actions/upload-artifact@v4
         if: always()
