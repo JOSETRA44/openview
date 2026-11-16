@@ -21,10 +21,10 @@ index 5ab60b07d..0624331a9 100644
  	list(APPEND ENABLED_DRIVERS android)
 diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
 new file mode 100644
-index 000000000..2dc88d26b
+index 000000000..fe86cfead
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.c
-@@ -0,0 +1,934 @@
+@@ -0,0 +1,926 @@
 +// Copyright 2026, OpenView contributors.
 +// SPDX-License-Identifier: BSL-1.0
 +/*!
@@ -485,7 +485,7 @@ index 000000000..2dc88d26b
 +}
 +
 +/*!
-+ * Switch once after AE warmup. Keep the original request intact on failure.
++ * Switch once after AE warmup by updating the existing request.
 + * Called with imu_lock held, also serialising against camera shutdown.
 + */
 +static void
@@ -507,32 +507,24 @@ index 000000000..2dc88d26b
 +	sensitivity = MIN(MAX(sensitivity, acfs->sensitivity_range[0]), acfs->sensitivity_range[1]);
 +	const int64_t frame_duration_ns = 33333333;
 +	const uint8_t off = ACAMERA_CONTROL_AE_MODE_OFF;
-+	ACaptureRequest *request = ACaptureRequest_copy(acfs->request);
-+	if (request == NULL) {
-+		U_LOG_W("OV_VIO: cannot copy capture request; keeping original AE request");
-+		return;
-+	}
-+
-+	camera_status_t ret = ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AE_MODE, 1, &off);
++	camera_status_t ret = ACaptureRequest_setEntry_u8(acfs->request, ACAMERA_CONTROL_AE_MODE, 1, &off);
 +	if (ret == ACAMERA_OK) {
-+		ret = ACaptureRequest_setEntry_i64(request, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &exposure_ns);
++		ret = ACaptureRequest_setEntry_i64(acfs->request, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &exposure_ns);
 +	}
 +	if (ret == ACAMERA_OK) {
-+		ret = ACaptureRequest_setEntry_i32(request, ACAMERA_SENSOR_SENSITIVITY, 1, &sensitivity);
++		ret = ACaptureRequest_setEntry_i32(acfs->request, ACAMERA_SENSOR_SENSITIVITY, 1, &sensitivity);
 +	}
 +	if (ret == ACAMERA_OK) {
-+		ret = ACaptureRequest_setEntry_i64(request, ACAMERA_SENSOR_FRAME_DURATION, 1, &frame_duration_ns);
++		ret = ACaptureRequest_setEntry_i64(acfs->request, ACAMERA_SENSOR_FRAME_DURATION, 1, &frame_duration_ns);
 +	}
 +	if (ret == ACAMERA_OK) {
-+		ret = ACameraCaptureSession_setRepeatingRequest(session, &acfs->capture_callbacks, 1, &request, NULL);
++		ret = ACameraCaptureSession_setRepeatingRequest(session, &acfs->capture_callbacks, 1, &acfs->request, NULL);
 +	}
 +	if (ret != ACAMERA_OK) {
 +		U_LOG_W("OV_VIO: manual capture request failed (%d); keeping original AE request", (int)ret);
-+		ACaptureRequest_free(request);
 +		return;
 +	}
 +
-+	acfs->manual_request = request;
 +	ACFS_INFO("OV_VIO: manual exposure %" PRIi64 " ns, sensitivity %d, frame duration %" PRIi64 " ns",
 +	          exposure_ns, sensitivity, frame_duration_ns);
 +}
