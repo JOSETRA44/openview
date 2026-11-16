@@ -62,6 +62,8 @@ class MainActivity : Activity() {
     private lateinit var panels: List<XrPanel>
     private lateinit var clockText: TextView
     private lateinit var detailText: TextView
+    private lateinit var diagText: TextView
+    private lateinit var statusDiagText: TextView
     private val uiHandler = Handler(android.os.Looper.getMainLooper())
     private val clockTick = object : Runnable {
         override fun run() {
@@ -108,13 +110,16 @@ class MainActivity : Activity() {
         panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800))
         clockText = XrPanel.label(this, "", 150f, XrPanel.INK, bold = true)
         detailText = XrPanel.label(this, "", 34f, XrPanel.MUTED).apply { setLineSpacing(14f, 1f) }
+        statusDiagText = XrPanel.label(this, "Pos: 0.00, 0.00, 0.00 m · NO TRACKED · -- fps", 24f, XrPanel.ACCENT, bold = true)
         panels[1].setContent(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = XrPanel.background(this@MainActivity)
             setPadding(48, 56, 48, 48)
             addView(clockText)
             addView(detailText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 30 })
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
+            addView(statusDiagText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
         }, emptyList())
         refreshHomePanel()
         updateStatusPanel()
@@ -150,11 +155,15 @@ class MainActivity : Activity() {
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = XrPanel.background(this@MainActivity)
-            setPadding(52, 44, 52, 40)
-            addView(XrPanel.label(this@MainActivity, "OpenView", 64f, XrPanel.INK, bold = true))
-            addView(XrPanel.label(this@MainActivity, "Inicio · mira un botón para elegirlo", 30f, XrPanel.MUTED),
+            setPadding(52, 36, 52, 28)
+            addView(XrPanel.label(this@MainActivity, "OpenView", 56f, XrPanel.INK, bold = true))
+            val currentDiag = if (::diagText.isInitialized) diagText.text.toString() else "Pos: 0.00, 0.00, 0.00 m · NO TRACKED · -- fps"
+            diagText = XrPanel.label(this@MainActivity, currentDiag, 28f, XrPanel.ACCENT, bold = true)
+            addView(diagText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = 6; bottomMargin = 8 })
+            addView(XrPanel.label(this@MainActivity, "Inicio · mira un botón para elegirlo", 26f, XrPanel.MUTED),
                 LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                    .apply { topMargin = 10; bottomMargin = 26 })
+                    .apply { bottomMargin = 18 })
         }
         for (pair in tiles.chunked(2)) {
             val row = XrPanel.row(this)
@@ -211,6 +220,22 @@ class MainActivity : Activity() {
 
     @Suppress("unused")
     fun getPanelAspect(panel: Int): Float = panels.getOrNull(panel)?.let { it.widthPx.toFloat() / it.heightPx } ?: 1f
+
+    @Suppress("unused")
+    fun updateDiagnostic(x: Float, y: Float, z: Float, tracked: Boolean, fps: Float) {
+        uiHandler.post {
+            val status = if (tracked) "POSITION_TRACKED" else "NO TRACKED"
+            val text = String.format(java.util.Locale.US, "Pos: %.2f, %.2f, %.2f m · %s · %.0f fps", x, y, z, status, fps)
+            if (::diagText.isInitialized) {
+                diagText.text = text
+                if (panels.isNotEmpty()) panels[0].redraw()
+            }
+            if (::statusDiagText.isInitialized) {
+                statusDiagText.text = text
+                if (panels.size > 1) panels[1].redraw()
+            }
+        }
+    }
 
     override fun onResume() {
         super.onResume()

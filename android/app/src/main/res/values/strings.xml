@@ -13,6 +13,9 @@
     <string name="home_ready">Ready to explore</string>
     <string name="home_missing_experience">Install the OpenView Experience companion APK from the same build to enter the space.</string>
     <string name="home_settings">Viewer settings and about</string>
+    <string name="home_diagnostics">Diagnostics</string>
+    <string name="home_diag_share">Share logs</string>
+    <string name="home_diag_close">Close</string>
     <string name="home_tracking_hint">Orientation tracking · Physical movement and surface anchoring are not available yet.</string>
     <string name="setup_channel_name">Setup</string>
     <string name="setup_overlay_title">OpenView needs one more permission</string>
