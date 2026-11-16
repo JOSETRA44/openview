@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/CMakeLists.txt b/src/xrt/drivers/CMakeLists.txt
-index 5ab60b07d..0624331a9 100644
+index 5ab60b07..0624331a 100644
 --- a/src/xrt/drivers/CMakeLists.txt
 +++ b/src/xrt/drivers/CMakeLists.txt
 @@ -510,6 +510,7 @@ if(XRT_BUILD_DRIVER_ANDROID)
@@ -21,10 +21,10 @@ index 5ab60b07d..0624331a9 100644
  	list(APPEND ENABLED_DRIVERS android)
 diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
 new file mode 100644
-index 000000000..c25bdfe4e
+index 00000000..10d3b80e
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.c
-@@ -0,0 +1,640 @@
+@@ -0,0 +1,771 @@
 +// Copyright 2026, OpenView contributors.
 +// SPDX-License-Identifier: BSL-1.0
 +/*!
@@ -152,6 +152,11 @@ index 000000000..c25bdfe4e
 +	struct os_mutex imu_lock;
 +	struct xrt_vec3 last_accel;
 +	bool have_accel;
++
++	// Throughput over the current reporting window, see acfs_report_stats.
++	int64_t stats_start_ns;
++	uint32_t frame_count;
++	uint32_t imu_count;
 +};
 +
 +static struct android_camera_fs *
@@ -167,12 +172,41 @@ index 000000000..c25bdfe4e
 + *
 + */
 +
++//! Rare and needed in the field, so these ignore the global log level.
++#define ACFS_INFO(...) U_LOG_IFL_I(U_LOGGING_INFO, __VA_ARGS__)
++
++/*!
++ * One line every five seconds with what is really reaching the tracker.
++ * The counters are touched from the camera and the IMU threads without a
++ * lock: they only feed this line.
++ */
++static void
++acfs_report_stats(struct android_camera_fs *acfs)
++{
++	int64_t now_ns = os_monotonic_get_ns();
++	if (acfs->stats_start_ns == 0) {
++		acfs->stats_start_ns = now_ns;
++		return;
++	}
++
++	double elapsed_s = time_ns_to_s(now_ns - acfs->stats_start_ns);
++	if (elapsed_s < 5.0) {
++		return;
++	}
++
++	ACFS_INFO("SLAM input: camera %.1f fps, IMU %.0f Hz", acfs->frame_count / elapsed_s,
++	          acfs->imu_count / elapsed_s);
++	acfs->stats_start_ns = now_ns;
++	acfs->frame_count = 0;
++	acfs->imu_count = 0;
++}
++
 +static void
 +on_device_disconnected(void *context, ACameraDevice *device)
 +{
 +	(void)context;
 +	(void)device;
-+	U_LOG_W("Android camera disconnected");
++	U_LOG_W("Android camera disconnected: another app took it or the system revoked it. No images for SLAM");
 +}
 +
 +static void
@@ -180,7 +214,10 @@ index 000000000..c25bdfe4e
 +{
 +	(void)context;
 +	(void)device;
-+	U_LOG_E("Android camera error %d", error);
++	// The NDK folds the platform's "camera disabled by policy" into ERROR_CAMERA_DEVICE.
++	U_LOG_E("Android camera error %d: no more images for SLAM. Android stops the camera of a process that is "
++	        "not in the foreground",
++	        error);
 +}
 +
 +static void
@@ -245,6 +282,9 @@ index 000000000..c25bdfe4e
 +
 +			xrt_sink_push_frame(acfs->sinks.cams[0], xf);
 +			xrt_frame_reference(&xf, NULL);
++
++			acfs->frame_count++;
++			acfs_report_stats(acfs);
 +		}
 +	}
 +
@@ -284,6 +324,7 @@ index 000000000..c25bdfe4e
 +	sample.gyro_rad_secs.z = (double)event->vector.z;
 +
 +	xrt_sink_push_imu(acfs->sinks.imus[0], &sample);
++	acfs->imu_count++;
 +}
 +
 +static void *
@@ -387,6 +428,76 @@ index 000000000..c25bdfe4e
 +}
 +
 +static bool
++acfs_meta_has_u8(const ACameraMetadata *chars, uint32_t tag, uint8_t value)
++{
++	ACameraMetadata_const_entry entry = {0};
++	if (ACameraMetadata_getConstEntry(chars, tag, &entry) != ACAMERA_OK) {
++		return false;
++	}
++	for (uint32_t i = 0; i < entry.count; i++) {
++		if (entry.data.u8[i] == value) {
++			return true;
++		}
++	}
++	return false;
++}
++
++static bool
++acfs_meta_has_fps_range(const ACameraMetadata *chars, int32_t low, int32_t high)
++{
++	ACameraMetadata_const_entry entry = {0};
++	if (ACameraMetadata_getConstEntry(chars, ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, &entry) !=
++	    ACAMERA_OK) {
++		return false;
++	}
++	for (uint32_t i = 0; i + 1 < entry.count; i += 2) {
++		if (entry.data.i32[i] == low && entry.data.i32[i + 1] == high) {
++			return true;
++		}
++	}
++	return false;
++}
++
++/*!
++ * Makes the stream usable for tracking, the same way the sensor recorder
++ * the calibration was made with does: a steady 30 fps, no electronic or
++ * optical stabilisation (both move the image independently of the IMU) and
++ * focus fixed at infinity (autofocus changes the focal length under the
++ * calibration). Each control is only set when the camera lists it.
++ */
++static void
++acfs_configure_request(struct android_camera_fs *acfs, const ACameraMetadata *chars)
++{
++	if (acfs_meta_has_fps_range(chars, 30, 30)) {
++		const int32_t fps_range[2] = {30, 30};
++		ACaptureRequest_setEntry_i32(acfs->request, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, fps_range);
++	}
++
++	if (acfs_meta_has_u8(chars, ACAMERA_CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES,
++	                     ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE_OFF)) {
++		const uint8_t off = ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE_OFF;
++		ACaptureRequest_setEntry_u8(acfs->request, ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE, 1, &off);
++	}
++
++	if (acfs_meta_has_u8(chars, ACAMERA_LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION,
++	                     ACAMERA_LENS_OPTICAL_STABILIZATION_MODE_OFF)) {
++		const uint8_t off = ACAMERA_LENS_OPTICAL_STABILIZATION_MODE_OFF;
++		ACaptureRequest_setEntry_u8(acfs->request, ACAMERA_LENS_OPTICAL_STABILIZATION_MODE, 1, &off);
++	}
++
++	bool fixed_focus = acfs_meta_has_u8(chars, ACAMERA_CONTROL_AF_AVAILABLE_MODES, ACAMERA_CONTROL_AF_MODE_OFF);
++	if (fixed_focus) {
++		const uint8_t off = ACAMERA_CONTROL_AF_MODE_OFF;
++		const float infinity_diopters = 0.0f;
++		ACaptureRequest_setEntry_u8(acfs->request, ACAMERA_CONTROL_AF_MODE, 1, &off);
++		ACaptureRequest_setEntry_float(acfs->request, ACAMERA_LENS_FOCUS_DISTANCE, 1, &infinity_diopters);
++	}
++
++	ACFS_INFO("Android camera for SLAM: %dx%d, focus %s", CAM_WIDTH, CAM_HEIGHT,
++	          fixed_focus ? "fixed at infinity" : "left to the camera");
++}
++
++static bool
 +acfs_start_camera(struct android_camera_fs *acfs)
 +{
 +	acfs->manager = ACameraManager_create();
@@ -422,9 +533,15 @@ index 000000000..c25bdfe4e
 +	device_callbacks.onDisconnected = on_device_disconnected;
 +	device_callbacks.onError = on_device_error;
 +
++	ACameraMetadata *chars = NULL;
++	ACameraManager_getCameraCharacteristics(acfs->manager, camera_id, &chars);
++
 +	camera_status_t cret = ACameraManager_openCamera(acfs->manager, camera_id, &device_callbacks, &acfs->device);
 +	free(camera_id);
 +	if (cret != ACAMERA_OK || acfs->device == NULL) {
++		if (chars != NULL) {
++			ACameraMetadata_free(chars);
++		}
 +		U_LOG_E("Android camera frameserver: openCamera failed (%d); camera permission missing?", (int)cret);
 +		return false;
 +	}
@@ -442,10 +559,24 @@ index 000000000..c25bdfe4e
 +	cret = ACameraDevice_createCaptureSession(acfs->device, acfs->outputs, &session_callbacks, &acfs->session);
 +	if (cret != ACAMERA_OK || acfs->session == NULL) {
 +		U_LOG_E("Android camera frameserver: createCaptureSession failed (%d)", (int)cret);
++		if (chars != NULL) {
++			ACameraMetadata_free(chars);
++		}
 +		return false;
 +	}
 +
-+	ACameraDevice_createCaptureRequest(acfs->device, TEMPLATE_RECORD, &acfs->request);
++	cret = ACameraDevice_createCaptureRequest(acfs->device, TEMPLATE_RECORD, &acfs->request);
++	if (cret != ACAMERA_OK || acfs->request == NULL) {
++		U_LOG_E("Android camera frameserver: createCaptureRequest failed (%d)", (int)cret);
++		if (chars != NULL) {
++			ACameraMetadata_free(chars);
++		}
++		return false;
++	}
++	if (chars != NULL) {
++		acfs_configure_request(acfs, chars);
++		ACameraMetadata_free(chars);
++	}
 +	ACameraOutputTarget_create(window, &acfs->target);
 +	ACaptureRequest_addTarget(acfs->request, acfs->target);
 +
@@ -667,7 +798,7 @@ index 000000000..c25bdfe4e
 +}
 diff --git a/src/xrt/drivers/android/android_camera_fs.h b/src/xrt/drivers/android/android_camera_fs.h
 new file mode 100644
-index 000000000..65011151b
+index 00000000..65011151
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.h
 @@ -0,0 +1,34 @@
@@ -706,7 +837,7 @@ index 000000000..65011151b
 +}
 +#endif
 diff --git a/src/xrt/state_trackers/prober/p_prober.c b/src/xrt/state_trackers/prober/p_prober.c
-index dc318698a..30df9dfb3 100644
+index dc318698..30df9dfb 100644
 --- a/src/xrt/state_trackers/prober/p_prober.c
 +++ b/src/xrt/state_trackers/prober/p_prober.c
 @@ -43,6 +43,10 @@
@@ -743,10 +874,10 @@ index dc318698a..30df9dfb3 100644
  	if (pdev->num_v4ls == 0) {
  		return -1;
 diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
-index d169b9afc..ad1bf884a 100644
+index d169b9af..72b9f8a8 100644
 --- a/src/xrt/state_trackers/prober/p_tracking.c
 +++ b/src/xrt/state_trackers/prober/p_tracking.c
-@@ -39,6 +39,13 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
+@@ -39,6 +39,52 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
  DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
  #endif
  
@@ -754,13 +885,52 @@ index d169b9afc..ad1bf884a 100644
 +#include "android/android_camera_fs.h"
 +#include "util/u_debug.h"
 +#include <xrt/xrt_config_android.h>
++#include <unistd.h>
 +DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
++
++#ifdef XRT_FEATURE_SLAM
++/*!
++ * The VIT backend ends the whole process when its configuration or the
++ * calibration it points to cannot be read, and a runtime without head
++ * tracking is worse than one with 3DoF. So check every file up front: the
++ * config is a list of `key="path"` lines.
++ */
++static bool
++p_android_slam_config_is_readable(const char *config_path)
++{
++	FILE *file = fopen(config_path, "r");
++	if (file == NULL) {
++		U_LOG_W("SLAM config '%s' is missing", config_path);
++		return false;
++	}
++
++	bool ok = true;
++	int path_count = 0;
++	char line[512];
++	while (ok && fgets(line, sizeof(line), file) != NULL) {
++		char *start = strchr(line, '"');
++		char *end = start != NULL ? strchr(start + 1, '"') : NULL;
++		if (end == NULL) {
++			continue;
++		}
++		*end = '\0';
++		path_count++;
++		if (access(start + 1, R_OK) != 0) {
++			U_LOG_W("SLAM config points to '%s', which cannot be read", start + 1);
++			ok = false;
++		}
++	}
++	fclose(file);
++
++	return ok && path_count > 0;
++}
++#endif
 +#endif
 +
  /*
   *
   * Structs and defines.
-@@ -281,6 +288,48 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
+@@ -281,6 +327,67 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
  	}
  #endif
  
@@ -768,6 +938,18 @@ index d169b9afc..ad1bf884a 100644
 +
 +#ifdef XRT_BUILD_DRIVER_ANDROID
 +	if (debug_get_bool_option_android_slam_camera()) {
++#ifdef XRT_FEATURE_SLAM
++		// The backend ships inside the runtime APK, so dlopen finds it by
++		// soname in the app's native library directory. The app extracts
++		// the SLAM config into its files dir at a fixed path on startup.
++		static char slam_config_path[256];
++		(void)snprintf(slam_config_path, sizeof(slam_config_path), "/data/data/%s/files/slam/slam_config.txt",
++		               XRT_ANDROID_PACKAGE);
++		if (!p_android_slam_config_is_readable(slam_config_path)) {
++			U_LOG_W("SLAM tracking is not set up, the Android device will only track orientation");
++			return false;
++		}
++
 +		struct xrt_slam_sinks empty_sinks = {0};
 +		struct xrt_slam_sinks *sinks = &empty_sinks;
 +
@@ -778,31 +960,38 @@ index d169b9afc..ad1bf884a 100644
 +		assert(fact->xfs->source_id == ANDROID_CAMERA_FS_SOURCE_ID &&
 +		       "xfs is not the Android camera, unsynced open_video_device?");
 +
-+#ifdef XRT_FEATURE_SLAM
 +		struct t_slam_tracker_config st_config;
 +		t_slam_fill_default_config(&st_config);
 +		st_config.cam_count = 1;
-+
-+		// The backend ships inside the runtime APK, so dlopen finds it by
-+		// soname in the app's native library directory. The app extracts
-+		// the SLAM config into its files dir at a fixed path on startup.
 +		st_config.vit_system_library_path = "libbasalt.so";
-+		static char slam_config_path[256];
-+		(void)snprintf(slam_config_path, sizeof(slam_config_path), "/data/data/%s/files/slam/slam_config.txt",
-+		               XRT_ANDROID_PACKAGE);
 +		st_config.slam_config = slam_config_path;
++
++		// Samples are only handed to the backend while this is set, and on
++		// a phone nothing else sets it: there is no debug UI and no
++		// environment. Without it the tracker never sees a frame.
++		st_config.submit_from_start = true;
++
++		// The device blends the estimates with its own gyro fusion, so it
++		// wants them as the backend made them, not extrapolated.
++		st_config.prediction = SLAM_PRED_NONE;
 +
 +		int ret = t_slam_create(&fact->xfctx, &st_config, &fact->xts, &sinks);
 +		if (ret != 0) {
-+			U_LOG_W("Unable to initialize SLAM tracking, the Android device will not be tracked");
++			// Do not open the camera for a tracker that does not exist.
++			U_LOG_W("Unable to initialize SLAM tracking, the Android device will only track orientation");
++			fact->xts = NULL;
++			return false;
 +		}
-+#else
-+		U_LOG_W("SLAM tracking support is disabled, the Android device will not be tracked");
-+#endif
 +
-+		xrt_fs_slam_stream_start(fact->xfs, sinks);
++		if (xrt_fs_slam_stream_start(fact->xfs, sinks) != XRT_SUCCESS) {
++			U_LOG_W("The camera could not be started, SLAM will have no images until it can");
++		}
 +
 +		return true;
++#else
++		U_LOG_W("SLAM tracking support is disabled, the Android device will only track orientation");
++		return false;
++#endif
 +	}
 +#endif
 +
