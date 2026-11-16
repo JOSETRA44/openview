@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/android/android_prober.c b/src/xrt/drivers/android/android_prober.c
-index 7b647b6fa..edf4c7ba9 100644
+index 7b647b6f..edf4c7ba 100644
 --- a/src/xrt/drivers/android/android_prober.c
 +++ b/src/xrt/drivers/android/android_prober.c
 @@ -69,7 +69,7 @@ android_prober_autoprobe(struct xrt_auto_prober *xap,
@@ -12,7 +12,7 @@ index 7b647b6fa..edf4c7ba9 100644
  	return 1;
  }
 diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
-index e2f993763..ae38d4b01 100644
+index e2f99376..0d726572 100644
 --- a/src/xrt/drivers/android/android_sensors.c
 +++ b/src/xrt/drivers/android/android_sensors.c
 @@ -14,6 +14,9 @@
@@ -25,30 +25,285 @@ index e2f993763..ae38d4b01 100644
  #include "util/u_debug.h"
  #include "util/u_device.h"
  #include "util/u_distortion_mesh.h"
-@@ -415,6 +418,22 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
- {
- 	struct android_device *d = android_device(xdev);
+@@ -29,8 +32,13 @@
  
-+	// Prefer the SLAM tracker (6DoF) whenever it is actually tracking;
-+	// fall back to the 3DoF sensor fusion otherwise, e.g. while the
-+	// tracker warms up or after it loses the scene.
-+	if (d->slam != NULL) {
-+		struct xrt_space_relation slam_relation = XRT_SPACE_RELATION_ZERO;
-+		xrt_tracked_slam_get_tracked_pose(d->slam, at_timestamp_ns, &slam_relation);
+ #include "os/os_time.h"
+ 
++#include "math/m_api.h"
++#include "math/m_vec3.h"
 +
-+		const enum xrt_space_relation_flags tracked_bits =
-+		    (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
-+		                                    XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
-+		if ((slam_relation.relation_flags & tracked_bits) == tracked_bits) {
-+			*out_relation = slam_relation;
-+			return XRT_SUCCESS;
+ #include <xrt/xrt_config_android.h>
+ 
++#include <math.h>
++#include <string.h>
+ #include <time.h>
+ 
+ // Workaround to avoid the inclusion of "android_native_app_glue.h.
+@@ -395,6 +403,7 @@ android_device_destroy(struct xrt_device *xdev)
+ 
+ 	// Now that the thread is not running we can destroy the lock.
+ 	os_mutex_destroy(&android->lock);
++	os_mutex_destroy(&android->slam_state.lock);
+ 
+ 	// Destroy the fusion.
+ 	m_imu_3dof_close(&android->fusion);
+@@ -407,6 +416,241 @@ android_device_destroy(struct xrt_device *xdev)
+ 	free(android);
+ }
+ 
++/*
++ *
++ * SLAM tracker fusion.
++ *
++ */
++
++//! Messages about the tracker are rare and needed in the field, so they ignore the driver's log level.
++#define ANDROID_SLAM_LOG(...) U_LOG_IFL_I(U_LOGGING_INFO, __VA_ARGS__)
++
++//! A tracker that has not produced a new pose for this long is considered stalled.
++#define ANDROID_SLAM_STALE_NS (400 * U_TIME_1MS_IN_NS)
++//! Faster than any head moves; the estimate has diverged.
++#define ANDROID_SLAM_MAX_SPEED_M_S 6.0f
++//! Plausible new poses in a row before the tracker is trusted.
++#define ANDROID_SLAM_GOOD_POSES_TO_TRACK 15
++//! Time constant of the yaw correction.
++#define ANDROID_SLAM_YAW_TAU_S 4.0f
++//! Above this angular speed the tracker's (late) orientation is not compared with the fusion's.
++#define ANDROID_SLAM_YAW_MAX_RATE_RAD_S 0.5f
++
++static float
++android_wrap_angle(float a)
++{
++	while (a > (float)M_PI) {
++		a -= 2.0f * (float)M_PI;
++	}
++	while (a < -(float)M_PI) {
++		a += 2.0f * (float)M_PI;
++	}
++	return a;
++}
++
++//! Heading of an orientation: the rotation about +Y of its right vector.
++static float
++android_yaw_of(const struct xrt_quat *q)
++{
++	const struct xrt_vec3 right = {1.0f, 0.0f, 0.0f};
++	struct xrt_vec3 r;
++	math_quat_rotate_vec3(q, &right, &r);
++	return atan2f(-r.z, r.x);
++}
++
++static struct xrt_quat
++android_yaw_quat(float yaw)
++{
++	struct xrt_quat q = {0.0f, sinf(yaw * 0.5f), 0.0f, cosf(yaw * 0.5f)};
++	return q;
++}
++
++static struct xrt_vec3
++android_yaw_rotate(float yaw, const struct xrt_vec3 *v)
++{
++	const float c = cosf(yaw);
++	const float s = sinf(yaw);
++	struct xrt_vec3 out = {c * v->x + s * v->z, v->y, -s * v->x + c * v->z};
++	return out;
++}
++
++/*!
++ * The tracker reports the pose of the IMU, in the phone's own sensor axes
++ * (the frameserver does not permute them), in a world with Z up. The device
++ * reports the pose of the head, in the axes the 3DoF fusion uses (the sensor
++ * axes turned a quarter turn about Z for landscape, see the sensor callback),
++ * in a world with Y up.
++ */
++static void
++android_slam_to_output_convention(const struct xrt_pose *slam, struct xrt_pose *out)
++{
++	// Minus a quarter turn about X: Z up to Y up.
++	const struct xrt_quat world_y_up = {-0.70710678f, 0.0f, 0.0f, 0.70710678f};
++	// Minus a quarter turn about Z: head axes expressed in sensor axes.
++	const struct xrt_quat sensor_from_head = {0.0f, 0.0f, -0.70710678f, 0.70710678f};
++
++	struct xrt_quat tmp;
++	math_quat_rotate(&world_y_up, &slam->orientation, &tmp);
++	math_quat_rotate(&tmp, &sensor_from_head, &out->orientation);
++	math_quat_normalize(&out->orientation);
++
++	out->position.x = slam->position.x;
++	out->position.y = slam->position.z;
++	out->position.z = -slam->position.y;
++}
++
++static bool
++android_pose_is_finite(const struct xrt_pose *p)
++{
++	return isfinite(p->position.x) && isfinite(p->position.y) && isfinite(p->position.z) &&
++	       isfinite(p->orientation.x) && isfinite(p->orientation.y) && isfinite(p->orientation.z) &&
++	       isfinite(p->orientation.w);
++}
++
++static void
++android_slam_stop_tracking_locked(struct android_device *d, const char *why)
++{
++	if (d->slam_state.tracking) {
++		ANDROID_SLAM_LOG("SLAM tracking lost (%s): holding position, orientation stays on the IMU", why);
++	}
++	d->slam_state.tracking = false;
++	d->slam_state.good_count = 0;
++}
++
++/*!
++ * Combines the tracker with the 3DoF fusion. Call with slam_state.lock held.
++ *
++ * Orientation always comes from the gyro fusion, which is sampled at
++ * hundreds of hertz and predicted to the display time; the tracker only
++ * steers its heading, slowly, so vision removes the gyro's yaw drift without
++ * adding the camera's latency to head rotation. Position comes from the
++ * tracker. The tracker's world is aligned to the output world, in heading
++ * and translation, each time tracking starts, so starting, losing and
++ * regaining tracking never makes the view jump.
++ *
++ * @param fusion_rel The 3DoF relation for the requested time, updated in place.
++ */
++static void
++android_slam_update_locked(struct android_device *d,
++                           int64_t at_timestamp_ns,
++                           int64_t now_ns,
++                           struct xrt_space_relation *fusion_rel)
++{
++	struct xrt_space_relation slam_rel = XRT_SPACE_RELATION_ZERO;
++	xrt_tracked_slam_get_tracked_pose(d->slam, at_timestamp_ns, &slam_rel);
++
++	const enum xrt_space_relation_flags tracked_bits =
++	    (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
++	                                    XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
++	bool have_pose =
++	    (slam_rel.relation_flags & tracked_bits) == tracked_bits && android_pose_is_finite(&slam_rel.pose);
++
++	struct xrt_pose pose = XRT_POSE_IDENTITY;
++	bool is_new = false;
++	if (have_pose) {
++		android_slam_to_output_convention(&slam_rel.pose, &pose);
++
++		// The tracker reports no timestamps here; a pose that differs from the last one is a new estimate.
++		is_new = !d->slam_state.have_last_pose ||
++		         memcmp(&pose, &d->slam_state.last_pose, sizeof(pose)) != 0;
++	}
++
++	if (is_new) {
++		bool plausible = true;
++		if (d->slam_state.have_last_pose) {
++			struct xrt_vec3 delta = m_vec3_sub(pose.position, d->slam_state.last_pose.position);
++			float dt_s = (float)time_ns_to_s(now_ns - d->slam_state.last_change_ns);
++			// Poses arrive in bursts, so the interval is floored at one camera frame.
++			plausible = m_vec3_len(delta) / MAX(dt_s, 0.033f) < ANDROID_SLAM_MAX_SPEED_M_S;
++		}
++
++		d->slam_state.last_pose = pose;
++		d->slam_state.have_last_pose = true;
++		d->slam_state.last_change_ns = now_ns;
++		d->slam_state.new_pose_count++;
++
++		if (!plausible) {
++			android_slam_stop_tracking_locked(d, "implausible jump");
++		} else if (!d->slam_state.tracking &&
++		           ++d->slam_state.good_count >= ANDROID_SLAM_GOOD_POSES_TO_TRACK) {
++			// Align the tracker's world so that this pose lands on what is being reported right now.
++			struct xrt_quat correction = android_yaw_quat(d->slam_state.yaw_correction);
++			struct xrt_quat corrected;
++			math_quat_rotate(&correction, &fusion_rel->pose.orientation, &corrected);
++
++			d->slam_state.align_yaw =
++			    android_wrap_angle(android_yaw_of(&corrected) - android_yaw_of(&pose.orientation));
++			struct xrt_vec3 rotated = android_yaw_rotate(d->slam_state.align_yaw, &pose.position);
++			d->slam_state.align_pos = m_vec3_sub(d->slam_state.position, rotated);
++			d->slam_state.tracking = true;
++			d->slam_state.last_correction_ns = now_ns;
++			ANDROID_SLAM_LOG("SLAM tracking started: 6DoF poses");
++		}
++	} else if (d->slam_state.tracking && now_ns - d->slam_state.last_change_ns > ANDROID_SLAM_STALE_NS) {
++		android_slam_stop_tracking_locked(d, "no new poses");
++	}
++
++	if (d->slam_state.tracking) {
++		struct xrt_vec3 rotated =
++		    android_yaw_rotate(d->slam_state.align_yaw, &d->slam_state.last_pose.position);
++		d->slam_state.position = m_vec3_add(rotated, d->slam_state.align_pos);
++
++		// Steer the fusion's heading towards the tracker's, only on a new estimate and
++		// while the head is nearly still: the tracker's orientation is a camera frame
++		// or more old, the fusion's is predicted.
++		if (is_new) {
++			float dt_s = (float)time_ns_to_s(now_ns - d->slam_state.last_correction_ns);
++			d->slam_state.last_correction_ns = now_ns;
++			if (dt_s > 0.0f && dt_s < 1.0f &&
++			    m_vec3_len(fusion_rel->angular_velocity) < ANDROID_SLAM_YAW_MAX_RATE_RAD_S) {
++				float slam_yaw = d->slam_state.align_yaw +
++				                 android_yaw_of(&d->slam_state.last_pose.orientation);
++				float fusion_yaw =
++				    d->slam_state.yaw_correction + android_yaw_of(&fusion_rel->pose.orientation);
++				float error = android_wrap_angle(slam_yaw - fusion_yaw);
++				float gain = 1.0f - expf(-dt_s / ANDROID_SLAM_YAW_TAU_S);
++				d->slam_state.yaw_correction =
++				    android_wrap_angle(d->slam_state.yaw_correction + gain * error);
++			}
 +		}
 +	}
 +
- 	struct xrt_space_relation new_relation = XRT_SPACE_RELATION_ZERO;
++	// Apply the heading correction to orientation and angular velocity alike.
++	struct xrt_quat correction = android_yaw_quat(d->slam_state.yaw_correction);
++	struct xrt_quat corrected;
++	math_quat_rotate(&correction, &fusion_rel->pose.orientation, &corrected);
++	math_quat_normalize(&corrected);
++	fusion_rel->pose.orientation = corrected;
++	fusion_rel->angular_velocity = android_yaw_rotate(d->slam_state.yaw_correction, &fusion_rel->angular_velocity);
++	fusion_rel->pose.position = d->slam_state.position;
++
++	if (d->slam_state.tracking) {
++		fusion_rel->relation_flags = (enum xrt_space_relation_flags)(fusion_rel->relation_flags |
++		                                                             XRT_SPACE_RELATION_POSITION_TRACKED_BIT);
++	}
++
++	if (now_ns - d->slam_state.last_log_ns > 5 * (int64_t)U_TIME_1S_IN_NS) {
++		if (d->slam_state.last_log_ns != 0) {
++			const char *state = d->slam_state.tracking
++			                        ? "tracking"
++			                        : (d->slam_state.have_last_pose ? "not trusted" : "no poses yet");
++			ANDROID_SLAM_LOG(
++			    "SLAM status: %s, %u new poses in 5 s, position %.2f %.2f %.2f m, yaw correction %.1f deg",
++			    state, d->slam_state.new_pose_count, d->slam_state.position.x, d->slam_state.position.y,
++			    d->slam_state.position.z, d->slam_state.yaw_correction * 180.0f / (float)M_PI);
++		}
++		d->slam_state.last_log_ns = now_ns;
++		d->slam_state.new_pose_count = 0;
++	}
++}
++
++
++/*
++ *
++ * Device functions, continued.
++ *
++ */
++
+ static xrt_result_t
+ android_device_get_tracked_pose(struct xrt_device *xdev,
+                                 enum xrt_input_name name,
+@@ -441,6 +685,13 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+ 	                                                              XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT |
+ 	                                                              XRT_SPACE_RELATION_POSITION_VALID_BIT);
  
- 	int64_t now_ns = os_monotonic_get_ns();
-@@ -463,7 +482,7 @@ android_device_compute_distortion(
++	// With a SLAM tracker the position, and a slow heading correction, come from it.
++	if (d->slam != NULL) {
++		os_mutex_lock(&d->slam_state.lock);
++		android_slam_update_locked(d, at_timestamp_ns, now_ns, &new_relation);
++		os_mutex_unlock(&d->slam_state.lock);
++	}
++
+ 	*out_relation = new_relation;
+ 	return XRT_SUCCESS;
+ }
+@@ -463,7 +714,7 @@ android_device_compute_distortion(
  
  
  struct android_device *
@@ -57,27 +312,35 @@ index e2f993763..ae38d4b01 100644
  {
  	enum u_device_alloc_flags flags =
  	    (enum u_device_alloc_flags)(U_DEVICE_ALLOC_HMD | U_DEVICE_ALLOC_TRACKING_NONE);
-@@ -561,6 +580,18 @@ android_device_create(void)
+@@ -561,6 +812,26 @@ android_device_create(void)
  	d->base.supported.orientation_tracking = true;
  	d->base.supported.position_tracking = false;
  
 +	// Attach the SLAM tracker when the prober factory can create one
 +	// (same pattern as the EuRoC device). Without a VIT backend the
 +	// factory fails and the device stays 3DoF, exactly as before.
++	os_mutex_init(&d->slam_state.lock);
 +	if (xp != NULL && xp->tracking != NULL &&
 +	    xp->tracking->create_tracked_slam(xp->tracking, &d->slam) >= 0 && d->slam != NULL) {
++		// Start from the origin the device already has: a zeroed one carries an
++		// all zero offset orientation, which makes every pose located through
++		// it invalid and xrLocateViews fail with XR_ERROR_RUNTIME_FAILURE.
++		d->tracking_origin = *d->base.tracking_origin;
 +		d->tracking_origin.type = XRT_TRACKING_TYPE_EXTERNAL_SLAM;
 +		snprintf(d->tracking_origin.name, XRT_TRACKING_NAME_LEN, "%s", "Android SLAM Tracker");
 +		d->base.tracking_origin = &d->tracking_origin;
 +		d->base.supported.position_tracking = true;
-+		ANDROID_INFO(d, "SLAM tracker attached: 6DoF poses enabled");
++		U_LOG_IFL_I(U_LOGGING_INFO, "SLAM tracker attached: 6DoF once it starts tracking, 3DoF until then");
++	} else {
++		d->slam = NULL;
++		U_LOG_IFL_I(U_LOGGING_INFO, "No SLAM tracker: 3DoF only");
 +	}
 +
  	ANDROID_DEBUG(d, "Created device!");
  
  	return d;
 diff --git a/src/xrt/drivers/android/android_sensors.h b/src/xrt/drivers/android/android_sensors.h
-index 19f8f56a7..4499a0138 100644
+index 19f8f56a..bfff737b 100644
 --- a/src/xrt/drivers/android/android_sensors.h
 +++ b/src/xrt/drivers/android/android_sensors.h
 @@ -17,6 +17,9 @@
@@ -90,7 +353,7 @@ index 19f8f56a7..4499a0138 100644
  
  #include "os/os_threading.h"
  
-@@ -63,12 +66,17 @@ struct android_device
+@@ -63,12 +66,53 @@ struct android_device
  	//! Fused orientations in the monotonic clock domain, has its own locking.
  	struct m_relation_history *relation_hist;
  
@@ -98,6 +361,42 @@ index 19f8f56a7..4499a0138 100644
 +	//! NULL keeps the device on the 3DoF sensor fusion alone.
 +	struct xrt_tracked_slam *slam;
 +	struct xrt_tracking_origin tracking_origin;
++
++	/*!
++	 * How the tracker's poses are combined with the 3DoF fusion, see
++	 * android_slam_update_locked.
++	 */
++	struct
++	{
++		//! Serialises the tracker (it is not thread safe) and this state.
++		struct os_mutex lock;
++
++		//! Is the tracker currently trusted for position?
++		bool tracking;
++		//! Plausible new poses in a row, has to reach a threshold to start tracking.
++		uint32_t good_count;
++
++		//! Last pose the tracker handed back, in the output convention.
++		struct xrt_pose last_pose;
++		bool have_last_pose;
++		//! When @ref last_pose last changed, used to tell a stalled tracker.
++		int64_t last_change_ns;
++
++		//! Yaw and translation taking the tracker's world to the output world.
++		float align_yaw;
++		struct xrt_vec3 align_pos;
++
++		//! Slow correction that keeps the fusion's heading on the tracker's.
++		float yaw_correction;
++		int64_t last_correction_ns;
++
++		//! Position reported last, held while the tracker is not trusted.
++		struct xrt_vec3 position;
++
++		//! Status line bookkeeping.
++		int64_t last_log_ns;
++		uint32_t new_pose_count;
++	} slam_state;
 +
  	enum u_logging_level log_level;
  };
