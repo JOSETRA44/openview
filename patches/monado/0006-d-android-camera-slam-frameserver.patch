@@ -21,10 +21,10 @@ index 5ab60b07d..0624331a9 100644
  	list(APPEND ENABLED_DRIVERS android)
 diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
 new file mode 100644
-index 000000000..3d91c9224
+index 000000000..2dc88d26b
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.c
-@@ -0,0 +1,771 @@
+@@ -0,0 +1,934 @@
 +// Copyright 2026, OpenView contributors.
 +// SPDX-License-Identifier: BSL-1.0
 +/*!
@@ -81,6 +81,7 @@ index 000000000..3d91c9224
 +
 +#include <media/NdkImageReader.h>
 +
++#include <inttypes.h>
 +#include <stdlib.h>
 +#include <string.h>
 +#include <time.h>
@@ -142,6 +143,16 @@ index 000000000..3d91c9224
 +	ACameraDevice *device;
 +	ACameraCaptureSession *session;
 +	ACaptureRequest *request;
++	ACaptureRequest *manual_request;
++	ACameraCaptureSession_captureCallbacks capture_callbacks;
++	bool ae_off_available;
++	bool manual_attempted;
++	bool capture_stopping;
++	int64_t exposure_range[2];
++	int32_t sensitivity_range[2];
++	uint64_t capture_count;
++	int64_t applied_exposure_ns;
++	int32_t applied_sensitivity;
 +	ACameraOutputTarget *target;
 +	ACaptureSessionOutput *session_output;
 +	ACaptureSessionOutputContainer *outputs;
@@ -152,6 +163,12 @@ index 000000000..3d91c9224
 +	struct os_mutex imu_lock;
 +	struct xrt_vec3 last_accel;
 +	bool have_accel;
++
++	// Protected by imu_lock, shared by image, capture and IMU callbacks.
++	int64_t last_image_ns;
++	int64_t last_imu_ns;
++	uint64_t frames_pushed;
++	uint64_t imus_pushed;
 +
 +	// Throughput over the current reporting window, see acfs_report_stats.
 +	int64_t stats_start_ns;
@@ -280,9 +297,14 @@ index 000000000..3d91c9224
 +			xf->source_timestamp = xf->timestamp;
 +			xf->source_id = ANDROID_CAMERA_FS_SOURCE_ID;
 +
++			int64_t image_ns = xf->timestamp;
 +			xrt_sink_push_frame(acfs->sinks.cams[0], xf);
 +			xrt_frame_reference(&xf, NULL);
 +
++			os_mutex_lock(&acfs->imu_lock);
++			acfs->last_image_ns = image_ns;
++			acfs->frames_pushed++;
++			os_mutex_unlock(&acfs->imu_lock);
 +			acfs->frame_count++;
 +			acfs_report_stats(acfs);
 +		}
@@ -324,6 +346,10 @@ index 000000000..3d91c9224
 +	sample.gyro_rad_secs.z = (double)event->vector.z;
 +
 +	xrt_sink_push_imu(acfs->sinks.imus[0], &sample);
++	os_mutex_lock(&acfs->imu_lock);
++	acfs->last_imu_ns = sample.timestamp_ns;
++	acfs->imus_pushed++;
++	os_mutex_unlock(&acfs->imu_lock);
 +	acfs->imu_count++;
 +}
 +
@@ -459,15 +485,128 @@ index 000000000..3d91c9224
 +}
 +
 +/*!
++ * Switch once after AE warmup. Keep the original request intact on failure.
++ * Called with imu_lock held, also serialising against camera shutdown.
++ */
++static void
++acfs_lock_exposure(struct android_camera_fs *acfs, ACameraCaptureSession *session)
++{
++	acfs->manual_attempted = true;
++	if (!acfs->ae_off_available) {
++		U_LOG_W("OV_VIO: AE OFF unavailable; keeping original AE request");
++		return;
++	}
++	if (acfs->exposure_range[0] <= 0 || acfs->exposure_range[1] < acfs->exposure_range[0] ||
++	    acfs->sensitivity_range[0] <= 0 || acfs->sensitivity_range[1] < acfs->sensitivity_range[0]) {
++		U_LOG_W("OV_VIO: manual sensor ranges unavailable; keeping original AE request");
++		return;
++	}
++
++	int64_t exposure_ns = MIN(MAX(5000000LL, acfs->exposure_range[0]), acfs->exposure_range[1]);
++	int32_t sensitivity = acfs->applied_sensitivity > 0 ? acfs->applied_sensitivity : 800;
++	sensitivity = MIN(MAX(sensitivity, acfs->sensitivity_range[0]), acfs->sensitivity_range[1]);
++	const int64_t frame_duration_ns = 33333333;
++	const uint8_t off = ACAMERA_CONTROL_AE_MODE_OFF;
++	ACaptureRequest *request = ACaptureRequest_copy(acfs->request);
++	if (request == NULL) {
++		U_LOG_W("OV_VIO: cannot copy capture request; keeping original AE request");
++		return;
++	}
++
++	camera_status_t ret = ACaptureRequest_setEntry_u8(request, ACAMERA_CONTROL_AE_MODE, 1, &off);
++	if (ret == ACAMERA_OK) {
++		ret = ACaptureRequest_setEntry_i64(request, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &exposure_ns);
++	}
++	if (ret == ACAMERA_OK) {
++		ret = ACaptureRequest_setEntry_i32(request, ACAMERA_SENSOR_SENSITIVITY, 1, &sensitivity);
++	}
++	if (ret == ACAMERA_OK) {
++		ret = ACaptureRequest_setEntry_i64(request, ACAMERA_SENSOR_FRAME_DURATION, 1, &frame_duration_ns);
++	}
++	if (ret == ACAMERA_OK) {
++		ret = ACameraCaptureSession_setRepeatingRequest(session, &acfs->capture_callbacks, 1, &request, NULL);
++	}
++	if (ret != ACAMERA_OK) {
++		U_LOG_W("OV_VIO: manual capture request failed (%d); keeping original AE request", (int)ret);
++		ACaptureRequest_free(request);
++		return;
++	}
++
++	acfs->manual_request = request;
++	ACFS_INFO("OV_VIO: manual exposure %" PRIi64 " ns, sensitivity %d, frame duration %" PRIi64 " ns",
++	          exposure_ns, sensitivity, frame_duration_ns);
++}
++
++static void
++on_capture_completed(void *context,
++                     ACameraCaptureSession *session,
++                     ACaptureRequest *request,
++                     const ACameraMetadata *result)
++{
++	(void)request;
++	struct android_camera_fs *acfs = (struct android_camera_fs *)context;
++	ACameraMetadata_const_entry entry = {0};
++	os_mutex_lock(&acfs->imu_lock);
++	if (acfs->capture_stopping) {
++		os_mutex_unlock(&acfs->imu_lock);
++		return;
++	}
++
++	if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_SENSITIVITY, &entry) == ACAMERA_OK &&
++	    entry.count >= 1) {
++		acfs->applied_sensitivity = entry.data.i32[0];
++	}
++	if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_EXPOSURE_TIME, &entry) == ACAMERA_OK &&
++	    entry.count >= 1) {
++		acfs->applied_exposure_ns = entry.data.i64[0];
++	}
++	acfs->capture_count++;
++	if (!acfs->manual_attempted && acfs->capture_count >= 30) {
++		acfs_lock_exposure(acfs, session);
++	}
++
++	if (acfs->capture_count % 150 == 0) {
++		int64_t frame_duration_ns = 0;
++		if (ACameraMetadata_getConstEntry(result, ACAMERA_SENSOR_FRAME_DURATION, &entry) == ACAMERA_OK &&
++		    entry.count >= 1) {
++			frame_duration_ns = entry.data.i64[0];
++		}
++		int64_t now_ns = os_monotonic_get_ns();
++		double image_age_ms = acfs->last_image_ns == 0 ? -1.0 : (now_ns - acfs->last_image_ns) / 1e6;
++		double imu_age_ms = acfs->last_imu_ns == 0 ? -1.0 : (now_ns - acfs->last_imu_ns) / 1e6;
++		ACFS_INFO("OV_VIO: exposure_ns=%" PRIi64 " sensitivity=%d frame_duration_ns=%" PRIi64
++		          " image_age_ms=%.1f imu_age_ms=%.1f frames=%" PRIu64 " imu=%" PRIu64,
++		          acfs->applied_exposure_ns, acfs->applied_sensitivity, frame_duration_ns, image_age_ms,
++		          imu_age_ms, acfs->frames_pushed, acfs->imus_pushed);
++	}
++	os_mutex_unlock(&acfs->imu_lock);
++}
++
++/*!
 + * Makes the stream usable for tracking, the same way the sensor recorder
 + * the calibration was made with does: a steady 30 fps, no electronic or
 + * optical stabilisation (both move the image independently of the IMU) and
 + * focus fixed at infinity (autofocus changes the focal length under the
-+ * calibration). Each control is only set when the camera lists it.
++ * calibration). Each control is only set when the camera lists it. Sensor
++ * ranges are saved for the later transition from AE to manual exposure.
 + */
 +static void
 +acfs_configure_request(struct android_camera_fs *acfs, const ACameraMetadata *chars)
 +{
++	acfs->ae_off_available =
++	    acfs_meta_has_u8(chars, ACAMERA_CONTROL_AE_AVAILABLE_MODES, ACAMERA_CONTROL_AE_MODE_OFF);
++	ACameraMetadata_const_entry entry = {0};
++	if (ACameraMetadata_getConstEntry(chars, ACAMERA_SENSOR_INFO_EXPOSURE_TIME_RANGE, &entry) == ACAMERA_OK &&
++	    entry.count >= 2) {
++		acfs->exposure_range[0] = entry.data.i64[0];
++		acfs->exposure_range[1] = entry.data.i64[1];
++	}
++	if (ACameraMetadata_getConstEntry(chars, ACAMERA_SENSOR_INFO_SENSITIVITY_RANGE, &entry) == ACAMERA_OK &&
++	    entry.count >= 2) {
++		acfs->sensitivity_range[0] = entry.data.i32[0];
++		acfs->sensitivity_range[1] = entry.data.i32[1];
++	}
++
 +	if (acfs_meta_has_fps_range(chars, 30, 30)) {
 +		const int32_t fps_range[2] = {30, 30};
 +		ACaptureRequest_setEntry_i32(acfs->request, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, fps_range);
@@ -500,6 +639,23 @@ index 000000000..3d91c9224
 +static bool
 +acfs_start_camera(struct android_camera_fs *acfs)
 +{
++	acfs->capture_stopping = false;
++	acfs->manual_attempted = false;
++	acfs->ae_off_available = false;
++	memset(acfs->exposure_range, 0, sizeof(acfs->exposure_range));
++	memset(acfs->sensitivity_range, 0, sizeof(acfs->sensitivity_range));
++	acfs->capture_count = 0;
++	acfs->applied_exposure_ns = 0;
++	acfs->applied_sensitivity = 0;
++	acfs->last_image_ns = 0;
++	acfs->last_imu_ns = 0;
++	acfs->frames_pushed = 0;
++	acfs->imus_pushed = 0;
++	acfs->capture_callbacks = (ACameraCaptureSession_captureCallbacks){
++	    .context = acfs,
++	    .onCaptureCompleted = on_capture_completed,
++	};
++
 +	acfs->manager = ACameraManager_create();
 +	if (acfs->manager == NULL) {
 +		U_LOG_E("Android camera frameserver: ACameraManager_create failed");
@@ -580,7 +736,7 @@ index 000000000..3d91c9224
 +	ACameraOutputTarget_create(window, &acfs->target);
 +	ACaptureRequest_addTarget(acfs->request, acfs->target);
 +
-+	cret = ACameraCaptureSession_setRepeatingRequest(acfs->session, NULL, 1, &acfs->request, NULL);
++	cret = ACameraCaptureSession_setRepeatingRequest(acfs->session, &acfs->capture_callbacks, 1, &acfs->request, NULL);
 +	if (cret != ACAMERA_OK) {
 +		U_LOG_E("Android camera frameserver: setRepeatingRequest failed (%d)", (int)cret);
 +		return false;
@@ -592,11 +748,18 @@ index 000000000..3d91c9224
 +static void
 +acfs_stop_camera(struct android_camera_fs *acfs)
 +{
++	os_mutex_lock(&acfs->imu_lock);
++	acfs->capture_stopping = true;
++	os_mutex_unlock(&acfs->imu_lock);
 +	if (acfs->session != NULL) {
 +		ACameraCaptureSession_stopRepeating(acfs->session);
 +		ACameraCaptureSession_abortCaptures(acfs->session);
 +		ACameraCaptureSession_close(acfs->session);
 +		acfs->session = NULL;
++	}
++	if (acfs->manual_request != NULL) {
++		ACaptureRequest_free(acfs->manual_request);
++		acfs->manual_request = NULL;
 +	}
 +	if (acfs->request != NULL) {
 +		ACaptureRequest_free(acfs->request);
