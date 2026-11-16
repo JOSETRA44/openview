@@ -8,6 +8,11 @@
         <package android:name="dev.openview.runtime" />
         <provider android:authorities="org.khronos.openxr.runtime_broker;org.khronos.openxr.system_runtime_broker" />
         <intent><action android:name="org.khronos.openxr.OpenXRRuntimeService" /></intent>
+        <!-- The home lists installed immersive OpenXR apps. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="org.khronos.openxr.intent.category.IMMERSIVE_HMD" />
+        </intent>
     </queries>
     <application android:label="OpenView Experience" android:theme="@android:style/Theme.Material.NoActionBar"
         android:allowBackup="false" android:extractNativeLibs="true">

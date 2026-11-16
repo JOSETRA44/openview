@@ -59,6 +59,16 @@ class MainActivity : Activity() {
     private var cameraPreviewAspect = 16f / 9f
     private var cameraDisplayDegrees = 0
     private var loggedCameraTransform = false
+    private lateinit var panels: List<XrPanel>
+    private lateinit var clockText: TextView
+    private lateinit var detailText: TextView
+    private val uiHandler = Handler(android.os.Looper.getMainLooper())
+    private val clockTick = object : Runnable {
+        override fun run() {
+            updateStatusPanel()
+            uiHandler.postDelayed(this, 1000)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,8 +77,8 @@ class MainActivity : Activity() {
         window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
         status = TextView(this).apply {
-            text = "OpenView · Preparando tu espacio…\nMira una escultura durante 1,25 s para pausar su giro. " +
-                "Aparta la mirada y vuelve para reanudar.\nVolumen +: centrar · Volumen −: cámara · Atrás: salir"
+            text = "OpenView · Preparando tu espacio…\nMira un botón del panel durante 1,25 s para elegirlo, " +
+                "o toca la pantalla.\nVolumen +: centrar · Volumen −: cámara · Atrás: salir"
             textSize = 18f; setTextColor(Color.rgb(164, 234, 207)); gravity = Gravity.CENTER
         }
         setContentView(LinearLayout(this).apply {
@@ -86,11 +96,127 @@ class MainActivity : Activity() {
             })
             addView(Button(this@MainActivity).apply { text = "Salir"; setOnClickListener { finish() } })
         })
+        buildPanels()
     }
+
+    /*
+     * The home: what the user sees floating in front of them. Panel 0 is the
+     * launcher, panel 1 the status column beside it. Sizes are in texture
+     * pixels; the native side decides where they hang and how big they look.
+     */
+    private fun buildPanels() {
+        panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800))
+        clockText = XrPanel.label(this, "", 150f, XrPanel.INK, bold = true)
+        detailText = XrPanel.label(this, "", 34f, XrPanel.MUTED).apply { setLineSpacing(14f, 1f) }
+        panels[1].setContent(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = XrPanel.background(this@MainActivity)
+            setPadding(48, 56, 48, 48)
+            addView(clockText)
+            addView(detailText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 30 })
+        }, emptyList())
+        refreshHomePanel()
+        updateStatusPanel()
+    }
+
+    /** Apps that declare themselves immersive OpenXR apps, the same way headsets find them. */
+    private fun immersiveApps(): List<android.content.pm.ResolveInfo> {
+        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN)
+            .addCategory("org.khronos.openxr.intent.category.IMMERSIVE_HMD")
+        return try {
+            packageManager.queryIntentActivities(intent, 0)
+                .filter { it.activityInfo.packageName != packageName }
+                .sortedBy { it.loadLabel(packageManager).toString().lowercase() }
+        } catch (e: Exception) {
+            Log.e(TAG, "App query failed", e); emptyList()
+        }
+    }
+
+    private fun refreshHomePanel() {
+        val tiles = ArrayList<XrPanel.Tile>()
+        tiles += XrPanel.tile(this, if (wantsCamera) "Volver al espacio" else "Ver mi entorno",
+            if (wantsCamera) "Cierra la cámara" else "Cámara del teléfono", null) {
+            setCamera(!wantsCamera); refreshHomePanel()
+        }
+        tiles += XrPanel.tile(this, "Centrar vista", "Pone el panel frente a ti", null) { recenter() }
+        for (app in immersiveApps().take(3)) {
+            val label = app.loadLabel(packageManager).toString()
+            val icon = try { app.loadIcon(packageManager) } catch (e: Exception) { null }
+            tiles += XrPanel.tile(this, label, "App de realidad virtual", icon) { launch(app) }
+        }
+        tiles += XrPanel.tile(this, "Salir", "Cierra OpenView", null) { finish() }
+
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = XrPanel.background(this@MainActivity)
+            setPadding(52, 44, 52, 40)
+            addView(XrPanel.label(this@MainActivity, "OpenView", 64f, XrPanel.INK, bold = true))
+            addView(XrPanel.label(this@MainActivity, "Inicio · mira un botón para elegirlo", 30f, XrPanel.MUTED),
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                    .apply { topMargin = 10; bottomMargin = 26 })
+        }
+        for (pair in tiles.chunked(2)) {
+            val row = XrPanel.row(this)
+            pair.forEachIndexed { index, tile ->
+                row.addView(tile.view, LinearLayout.LayoutParams(0, 170, 1f).apply { if (index == 0) rightMargin = 24 })
+            }
+            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, 170, 1f))
+            column.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 22 })
+        }
+        panels[0].setContent(column, tiles)
+    }
+
+    private fun launch(app: android.content.pm.ResolveInfo) {
+        try {
+            startActivity(android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .setClassName(app.activityInfo.packageName, app.activityInfo.name)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+            Log.e(TAG, "Could not launch ${app.activityInfo.packageName}", e)
+        }
+    }
+
+    private fun updateStatusPanel() {
+        val now = java.util.Date()
+        clockText.text = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(now)
+        val battery = getSystemService(android.os.BatteryManager::class.java)
+            ?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        val date = java.text.SimpleDateFormat("EEEE d 'de' MMMM", java.util.Locale("es")).format(now)
+        detailText.text = buildString {
+            append(date.replaceFirstChar { it.uppercase() })
+            if (battery >= 0) append("\nBatería $battery %")
+            append(if (wantsCamera) "\nViendo tu entorno" else "\nEspacio virtual")
+            append("\n\nVolumen +  centrar\nVolumen −  entorno\nTocar  elegir")
+        }
+        panels[1].redraw()
+    }
+
+    // The next five are invoked only on the render thread, with its EGL context current.
+    @Suppress("unused")
+    fun createPanelTexture(panel: Int, textureId: Int): Boolean = panels.getOrNull(panel)?.attach(textureId) ?: false
+
+    @Suppress("unused")
+    fun updatePanelTexture(panel: Int, transform: FloatArray): Boolean = panels.getOrNull(panel)?.update(transform) ?: false
+
+    @Suppress("unused")
+    fun panelHover(panel: Int, u: Float, v: Float): Int = panels.getOrNull(panel)?.hover(u, v) ?: -1
+
+    @Suppress("unused")
+    fun panelClick(panel: Int, index: Int) { panels.getOrNull(panel)?.click(index) }
+
+    @Suppress("unused")
+    fun releasePanelTextures() { panels.forEach { it.release() } }
+
+    @Suppress("unused")
+    fun getPanelAspect(panel: Int): Float = panels.getOrNull(panel)?.let { it.widthPx.toFloat() / it.heightPx } ?: 1f
 
     override fun onResume() {
         super.onResume()
         resumed = true
+        refreshHomePanel()
+        uiHandler.removeCallbacks(clockTick); uiHandler.post(clockTick)
         cameraAllowed.set(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         startEngine()
         if (wantsCamera && !cameraAllowed.get()) requestPermissions(arrayOf(Manifest.permission.CAMERA), 10)
@@ -121,6 +247,7 @@ class MainActivity : Activity() {
 
     override fun onPause() {
         resumed = false
+        uiHandler.removeCallbacks(clockTick)
         synchronized(engineLock) { if (engine != 0L) nativeStop(engine) }
         // Render thread owns the SurfaceTexture and releases it while EGL remains current.
         closeCameraDevice()

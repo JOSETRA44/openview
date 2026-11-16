@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -106,12 +107,24 @@ struct Experience {
     int cameraDisplayDegrees=0;
     std::vector<Vertex> grid,objects,reticle;
     openview::GazeDwell gaze;
-    std::array<bool,3> objectPaused{};
-    std::array<float,3> objectAngles{{0,1,2}};
+    // Floating panels: Android views drawn into external textures by the activity.
+    // Positions are metres in the recentred local space; the viewer sits at the origin
+    // looking down -Z. Panel 0 is the home, panel 1 the status column angled beside it.
+    struct Panel {
+        float x,y,z,yaw,width,height;
+        GLuint texture=0;
+        jfloatArray transformArray=nullptr;
+        Mat transform=identity();
+        bool attached=false,ready=false;
+    };
+    static constexpr int kPanels=2;
+    std::array<Panel,kPanels> panels{{{0.f,.05f,-2.f,0.f,1.6f,1.f},{1.15f,.05f,-1.83f,-.5f,.7f,1.f}}};
+    jmethodID panelCreate=nullptr,panelUpdate=nullptr,panelHover=nullptr,panelClick=nullptr,panelRelease=nullptr;
+    GLuint panelProgram=0;
+    bool srgbTarget=false;
     Mat gazePose=identity();
     bool gazeValid=false;
     float gazeDistance=2.5f;
-    double lastAnimationTime=0;
     uint64_t frames=0,cameraFrames=0;
 
     void javaCheck() {
@@ -124,8 +137,14 @@ struct Experience {
         cameraRelease=env->GetMethodID(cls,"releaseCameraTexture","()V");
         cameraAspectMethod=env->GetMethodID(cls,"getCameraAspect","()F");
         cameraRotationMethod=env->GetMethodID(cls,"getCameraDisplayRotation","()I");
+        panelCreate=env->GetMethodID(cls,"createPanelTexture","(II)Z");
+        panelUpdate=env->GetMethodID(cls,"updatePanelTexture","(I[F)Z");
+        panelHover=env->GetMethodID(cls,"panelHover","(IFF)I");
+        panelClick=env->GetMethodID(cls,"panelClick","(II)V");
+        panelRelease=env->GetMethodID(cls,"releasePanelTextures","()V");
         env->DeleteLocalRef(cls); javaCheck();
         if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod||!cameraRotationMethod) throw std::runtime_error("Camera JNI contract missing");
+        if(!panelCreate||!panelUpdate||!panelHover||!panelClick||!panelRelease) throw std::runtime_error("Panel JNI contract missing");
         cameraTransformArray=env->NewFloatArray(16);
 
         PFN_xrInitializeLoaderKHR initialize=nullptr;
@@ -193,6 +212,7 @@ struct Experience {
             XrSwapchainCreateInfo sc{XR_TYPE_SWAPCHAIN_CREATE_INFO};
             sc.usageFlags=XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT|XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
             sc.format=format; sc.sampleCount=1; sc.width=eye.width; sc.height=eye.height;
+            srgbTarget=format==GL_SRGB8_ALPHA8;
             sc.faceCount=1; sc.arraySize=1; sc.mipCount=1;
             XR(xrCreateSwapchain(session,&sc,&eye.swapchain));
             uint32_t imageCount=0; XR(xrEnumerateSwapchainImages(eye.swapchain,0,&imageCount,nullptr));
@@ -213,6 +233,20 @@ struct Experience {
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        // A quad from the vertex index alone. The views are drawn with sRGB values, so they
+        // are linearised when the eye buffer is sRGB. Transparent texels (the rounded
+        // corners the views leave clear) are dropped instead of blended.
+        panelProgram=program(
+            "#version 300 es\nuniform mat4 mvp;uniform mat4 tex;uniform vec2 size;out vec2 uv;void main(){vec2 q=vec2(float(gl_VertexID&1),float((gl_VertexID>>1)&1));uv=(tex*vec4(q,0.0,1.0)).xy;gl_Position=mvp*vec4((q-vec2(0.5))*size,0.0,1.0);}",
+            "#version 300 es\n#extension GL_OES_EGL_image_external_essl3 : require\nprecision mediump float;uniform samplerExternalOES image;uniform float gamma;in vec2 uv;out vec4 outColor;void main(){vec4 c=texture(image,uv);if(c.a<0.5)discard;outColor=vec4(pow(c.rgb,vec3(gamma)),1.0);}");
+        for(auto &panel:panels) {
+            glGenTextures(1,&panel.texture); glBindTexture(GL_TEXTURE_EXTERNAL_OES,panel.texture);
+            glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_EXTERNAL_OES,GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+            panel.transformArray=env->NewFloatArray(16);
+        }
         for(int i=-12;i<=12;++i) {
             const float v=float(i), shade=(i%4==0)?.19f:.085f;
             grid.push_back({v,-1.5f,-12,.08f,shade,shade+.025f}); grid.push_back({v,-1.5f,12,.08f,shade,shade+.025f});
@@ -291,8 +325,50 @@ struct Experience {
         glVertexAttribPointer(1,3,GL_FLOAT,GL_FALSE,sizeof(Vertex),reinterpret_cast<void*>(3*sizeof(float)));
         glDrawArrays(primitive,0,static_cast<GLsizei>(vertices.size()));
     }
-    openview::GazeVector objectCenter(int object, double seconds) const {
-        return {(object-1)*1.4f,-.1f+.12f*std::sin(float(seconds)*.6f+object),-3.f};
+    static Mat panelModel(const Panel &p) {
+        Mat m=identity(); const float c=std::cos(p.yaw),s=std::sin(p.yaw);
+        m[0]=c; m[2]=-s; m[8]=s; m[10]=c; m[12]=p.x; m[13]=p.y; m[14]=p.z;
+        return m;
+    }
+    // Distance along the ray to the panel, with the hit point as fractions from the
+    // panel's bottom left corner. Infinity when the ray misses or comes from behind.
+    static float rayPanel(const Panel &p, openview::GazeVector o, openview::GazeVector d, float &u, float &v) {
+        const float miss=std::numeric_limits<float>::infinity();
+        if(!p.ready) return miss;
+        const float c=std::cos(p.yaw),s=std::sin(p.yaw);
+        const float rx=o.x-p.x,ry=o.y-p.y,rz=o.z-p.z;
+        const float lx=c*rx-s*rz,lz=s*rx+c*rz;
+        const float dx=c*d.x-s*d.z,dz=s*d.x+c*d.z;
+        if(!(dz<-1e-5f) || !(lz>0)) return miss;
+        const float t=-lz/dz;
+        u=(lx+t*dx)/p.width+.5f; v=(ry+t*d.y)/p.height+.5f;
+        return (u>=0&&u<=1&&v>=0&&v<=1)?t:miss;
+    }
+    void updatePanels() {
+        for(int i=0;i<kPanels;++i) {
+            auto &panel=panels[i];
+            if(!panel.attached) {
+                panel.attached=env->CallBooleanMethod(activity,panelCreate,static_cast<jint>(i),static_cast<jint>(panel.texture)); javaCheck();
+                if(!panel.attached) continue;
+            }
+            panel.ready=env->CallBooleanMethod(activity,panelUpdate,static_cast<jint>(i),panel.transformArray); javaCheck();
+            if(panel.ready) env->GetFloatArrayRegion(panel.transformArray,0,16,panel.transform.data());
+        }
+    }
+    void drawPanels(const Mat &viewProjection) {
+        glUseProgram(panelProgram); glBindVertexArray(vao);
+        glDisableVertexAttribArray(0); glDisableVertexAttribArray(1);
+        glActiveTexture(GL_TEXTURE0); glUniform1i(glGetUniformLocation(panelProgram,"image"),0);
+        glUniform1f(glGetUniformLocation(panelProgram,"gamma"),srgbTarget?2.2f:1.f);
+        for(const auto &panel:panels) {
+            if(!panel.ready) continue;
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES,panel.texture);
+            const auto mvp=multiply(viewProjection,panelModel(panel));
+            glUniformMatrix4fv(glGetUniformLocation(panelProgram,"mvp"),1,GL_FALSE,mvp.data());
+            glUniformMatrix4fv(glGetUniformLocation(panelProgram,"tex"),1,GL_FALSE,panel.transform.data());
+            glUniform2f(glGetUniformLocation(panelProgram,"size"),panel.width,panel.height);
+            glDrawArrays(GL_TRIANGLE_STRIP,0,4);
+        }
     }
     void updateInteraction(XrTime time, double seconds) {
         const bool trigger=activate.exchange(false);
@@ -306,17 +382,26 @@ struct Experience {
         gazePose=poseMatrix(location.pose);
         openview::GazeVector origin{gazePose[12],gazePose[13],gazePose[14]};
         openview::GazeVector direction{-gazePose[8],-gazePose[9],-gazePose[10]};
-        int hit=-1; float nearest=20.f;
-        for(int i=0;i<3;++i) {
-            const float distance=openview::raySphere(origin,direction,objectCenter(i,seconds),.58f);
-            if(distance<nearest) { nearest=distance; hit=i; }
+        int hitPanel=-1; float nearest=20.f,hitU=0,hitV=0;
+        for(int i=0;i<kPanels;++i) {
+            float u=0,v=0; const float distance=rayPanel(panels[i],origin,direction,u,v);
+            if(distance<nearest) { nearest=distance; hitPanel=i; hitU=u; hitV=v; }
+        }
+        // Every panel hears where the gaze is, so the one just left clears its highlight.
+        int hit=-1;
+        for(int i=0;i<kPanels;++i) {
+            if(!panels[i].ready) continue;
+            const bool on=i==hitPanel;
+            const jint tile=env->CallIntMethod(activity,panelHover,static_cast<jint>(i),
+                static_cast<jfloat>(on?hitU:-1.f),static_cast<jfloat>(on?hitV:-1.f)); javaCheck();
+            if(on && tile>=0) hit=i*100+tile;
         }
         if(hit!=gaze.target) INFO("gaze target=%d",hit);
         if(gaze.update(hit,seconds,trigger)) {
-            objectPaused[hit]=!objectPaused[hit];
-            INFO("interaction object=%d state=%s source=%s",hit,objectPaused[hit]?"paused":"rotating",trigger?"tap":"dwell");
+            env->CallVoidMethod(activity,panelClick,static_cast<jint>(hit/100),static_cast<jint>(hit%100)); javaCheck();
+            INFO("interaction panel=%d tile=%d source=%s",hit/100,hit%100,trigger?"tap":"dwell");
         }
-        gazeDistance=hit>=0?nearest:2.5f;
+        gazeDistance=hitPanel>=0?nearest:2.5f;
         reticle.clear();
         const float inner=.008f*gazeDistance,outer=.012f*gazeDistance;
         for(int i=0;i<48;++i) {
@@ -332,27 +417,9 @@ struct Experience {
                 reticle.push_back({p[0],p[1],-gazeDistance,r,g,blue});
         }
     }
-    void makeObjects(double seconds) {
+    void makeObjects(double) {
         objects.clear();
-        const float elapsed=lastAnimationTime>0?float(std::clamp(seconds-lastAnimationTime,0.,.1)):0;
-        lastAnimationTime=seconds;
-        // Three floating sculptures and a far ring form a recognizable OpenView space.
-        for(int object=0;object<3;++object) {
-            if(!objectPaused[object]) objectAngles[object]+=elapsed*.25f;
-            const float a=objectAngles[object], c=std::cos(a),s=std::sin(a);
-            const auto center=objectCenter(object,seconds);
-            const float cx=center.x,cy=center.y,cz=center.z;
-            const float points[6][3]={{0,.55f,0},{.45f,0,0},{0,0,.45f},{-.45f,0,0},{0,0,-.45f},{0,-.55f,0}};
-            const int faces[8][3]={{0,1,2},{0,2,3},{0,3,4},{0,4,1},{5,2,1},{5,3,2},{5,4,3},{5,1,4}};
-            for(int f=0;f<8;++f) for(int k=0;k<3;++k) {
-                const float *p=points[faces[f][k]]; const float shade=.55f+float(f%4)*.14f;
-                const float highlight=gaze.target==object?1.15f:1.f;
-                objects.push_back({cx+c*p[0]+s*p[2],cy+p[1],cz-s*p[0]+c*p[2],
-                    (objectPaused[object]?.95f:object==0?.84f:.35f)*shade*highlight,
-                    (objectPaused[object]?.44f:object==0?.64f:.9f)*shade*highlight,
-                    (objectPaused[object]?.67f:object==0?.38f:.76f)*shade*highlight});
-            }
-        }
+        // A far ring behind the panels keeps a sense of depth in the empty space.
         for(int i=0;i<80;++i) {
             const float a=i*2*PI/80,b=(i+1)*2*PI/80;
             const float r=1.8f,rr=1.84f;
@@ -378,7 +445,7 @@ struct Experience {
             XrViewState viewState{XR_TYPE_VIEW_STATE}; uint32_t count=0;
             XR(xrLocateViews(session,&locate,&viewState,2,&count,views.data()));
             if(count==2 && (viewState.viewStateFlags&XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
-                updateInteraction(state.predictedDisplayTime,seconds); makeObjects(seconds);
+                updatePanels(); updateInteraction(state.predictedDisplayTime,seconds); makeObjects(seconds);
                 for(uint32_t i=0;i<2;++i) {
                     auto &eye=eyes[i]; uint32_t index=0;
                     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; XR(xrAcquireSwapchainImage(eye.swapchain,&acquire,&index));
@@ -409,6 +476,7 @@ struct Experience {
                     auto mvp=multiply(projection(views[i].fov),viewMatrix(views[i].pose));
                     if(!cameraActive) drawVertices(grid,GL_LINES,mvp);
                     drawVertices(objects,GL_TRIANGLES,mvp);
+                    drawPanels(mvp);
                     if(gazeValid) {
                         glDisable(GL_DEPTH_TEST);
                         drawVertices(reticle,GL_TRIANGLES,multiply(mvp,gazePose));
@@ -455,6 +523,12 @@ struct Experience {
     void cleanup() {
         if(env && cameraRelease) { env->CallVoidMethod(activity,cameraRelease); if(env->ExceptionCheck()) env->ExceptionClear(); }
         if(cameraTransformArray) { env->DeleteLocalRef(cameraTransformArray); cameraTransformArray=nullptr; }
+        if(env && panelRelease) { env->CallVoidMethod(activity,panelRelease); if(env->ExceptionCheck()) env->ExceptionClear(); }
+        for(auto &panel:panels) {
+            if(panel.transformArray) { env->DeleteLocalRef(panel.transformArray); panel.transformArray=nullptr; }
+            if(context!=EGL_NO_CONTEXT && panel.texture) glDeleteTextures(1,&panel.texture);
+        }
+        if(context!=EGL_NO_CONTEXT && panelProgram) glDeleteProgram(panelProgram);
         if(context!=EGL_NO_CONTEXT) {
             for(auto &eye:eyes) { glDeleteFramebuffers(1,&eye.fbo); glDeleteRenderbuffers(1,&eye.depth); }
             glDeleteProgram(sceneProgram); glDeleteProgram(cameraProgram); glDeleteBuffers(1,&vbo);
