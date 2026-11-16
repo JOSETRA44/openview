@@ -837,7 +837,7 @@ index 00000000..65011151
 +}
 +#endif
 diff --git a/src/xrt/state_trackers/prober/p_prober.c b/src/xrt/state_trackers/prober/p_prober.c
-index dc318698..30df9dfb 100644
+index dc318698..608aad19 100644
 --- a/src/xrt/state_trackers/prober/p_prober.c
 +++ b/src/xrt/state_trackers/prober/p_prober.c
 @@ -43,6 +43,10 @@
@@ -851,15 +851,16 @@ index dc318698..30df9dfb 100644
  #include <stdio.h>
  #include <string.h>
  #include <assert.h>
-@@ -62,6 +66,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(qwerty_combine, "QWERTY_COMBINE", false)
+@@ -62,6 +66,8 @@ DEBUG_GET_ONCE_BOOL_OPTION(qwerty_combine, "QWERTY_COMBINE", false)
  DEBUG_GET_ONCE_OPTION(vf_path, "VF_PATH", NULL)
  DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
  DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
-+DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
++// Off until 6DoF tracks on a device: setprop debug.xrt.ANDROID_SLAM_CAMERA true
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", false)
  
  
  /*
-@@ -1310,6 +1315,13 @@ p_open_video_device(struct xrt_prober *xp,
+@@ -1310,6 +1316,13 @@ p_open_video_device(struct xrt_prober *xp,
  	}
  #endif
  
@@ -874,10 +875,10 @@ index dc318698..30df9dfb 100644
  	if (pdev->num_v4ls == 0) {
  		return -1;
 diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
-index d169b9af..72b9f8a8 100644
+index d169b9af..40bf6d88 100644
 --- a/src/xrt/state_trackers/prober/p_tracking.c
 +++ b/src/xrt/state_trackers/prober/p_tracking.c
-@@ -39,6 +39,52 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
+@@ -39,6 +39,53 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
  DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
  #endif
  
@@ -886,7 +887,8 @@ index d169b9af..72b9f8a8 100644
 +#include "util/u_debug.h"
 +#include <xrt/xrt_config_android.h>
 +#include <unistd.h>
-+DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
++// Off until 6DoF tracks on a device: setprop debug.xrt.ANDROID_SLAM_CAMERA true
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", false)
 +
 +#ifdef XRT_FEATURE_SLAM
 +/*!
@@ -930,7 +932,7 @@ index d169b9af..72b9f8a8 100644
  /*
   *
   * Structs and defines.
-@@ -281,6 +327,67 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
+@@ -281,6 +328,67 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
  	}
  #endif
  
