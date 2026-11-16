@@ -1,5 +1,5 @@
 diff --git a/src/xrt/drivers/CMakeLists.txt b/src/xrt/drivers/CMakeLists.txt
-index 5ab60b07..0624331a 100644
+index 5ab60b07d..0624331a9 100644
 --- a/src/xrt/drivers/CMakeLists.txt
 +++ b/src/xrt/drivers/CMakeLists.txt
 @@ -510,6 +510,7 @@ if(XRT_BUILD_DRIVER_ANDROID)
@@ -21,7 +21,7 @@ index 5ab60b07..0624331a 100644
  	list(APPEND ENABLED_DRIVERS android)
 diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
 new file mode 100644
-index 00000000..10d3b80e
+index 000000000..3d91c9224
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.c
 @@ -0,0 +1,771 @@
@@ -267,7 +267,7 @@ index 00000000..10d3b80e
 +
 +	if (width == CAM_WIDTH && height == CAM_HEIGHT && y_plane != NULL && acfs->sinks.cams[0] != NULL) {
 +		struct xrt_frame *xf = NULL;
-+		u_frame_create_one_off(XRT_FORMAT_R8, CAM_WIDTH, CAM_HEIGHT, &xf);
++		u_frame_create_one_off(XRT_FORMAT_L8, CAM_WIDTH, CAM_HEIGHT, &xf);
 +		if (xf != NULL) {
 +			for (int row = 0; row < CAM_HEIGHT; row++) {
 +				memcpy(xf->data + (size_t)row * xf->stride, y_plane + (size_t)row * (size_t)y_stride,
@@ -674,7 +674,7 @@ index 00000000..10d3b80e
 +
 +	modes[0].width = CAM_WIDTH;
 +	modes[0].height = CAM_HEIGHT;
-+	modes[0].format = XRT_FORMAT_R8;
++	modes[0].format = XRT_FORMAT_L8;
 +	modes[0].stereo_format = XRT_STEREO_FORMAT_NONE;
 +
 +	*out_modes = modes;
@@ -798,7 +798,7 @@ index 00000000..10d3b80e
 +}
 diff --git a/src/xrt/drivers/android/android_camera_fs.h b/src/xrt/drivers/android/android_camera_fs.h
 new file mode 100644
-index 00000000..65011151
+index 000000000..65011151b
 --- /dev/null
 +++ b/src/xrt/drivers/android/android_camera_fs.h
 @@ -0,0 +1,34 @@
@@ -837,7 +837,7 @@ index 00000000..65011151
 +}
 +#endif
 diff --git a/src/xrt/state_trackers/prober/p_prober.c b/src/xrt/state_trackers/prober/p_prober.c
-index dc318698..608aad19 100644
+index dc318698a..c1986a93d 100644
 --- a/src/xrt/state_trackers/prober/p_prober.c
 +++ b/src/xrt/state_trackers/prober/p_prober.c
 @@ -43,6 +43,10 @@
@@ -856,7 +856,7 @@ index dc318698..608aad19 100644
  DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
  DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
 +// Off until 6DoF tracks on a device: setprop debug.xrt.ANDROID_SLAM_CAMERA true
-+DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", false)
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
  
  
  /*
@@ -875,7 +875,7 @@ index dc318698..608aad19 100644
  	if (pdev->num_v4ls == 0) {
  		return -1;
 diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
-index d169b9af..40bf6d88 100644
+index d169b9afc..5f0d5aa9c 100644
 --- a/src/xrt/state_trackers/prober/p_tracking.c
 +++ b/src/xrt/state_trackers/prober/p_tracking.c
 @@ -39,6 +39,53 @@ DEBUG_GET_ONCE_OPTION(euroc_path, "EUROC_PATH", NULL)
@@ -888,7 +888,7 @@ index d169b9af..40bf6d88 100644
 +#include <xrt/xrt_config_android.h>
 +#include <unistd.h>
 +// Off until 6DoF tracks on a device: setprop debug.xrt.ANDROID_SLAM_CAMERA true
-+DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", false)
++DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
 +
 +#ifdef XRT_FEATURE_SLAM
 +/*!
