@@ -18,6 +18,8 @@ Actualizado: 2026-11-12. La verificación se hace en GitHub Actions (`.github/wo
 | Modelo de latencia de pantalla (parche 0002) | Verificado en ese dispositivo a 60 y 90 Hz (1.7–1.9 periodos medidos); 120/144 Hz sin medir: el teléfono no los concede |
 | El runtime conoce la tasa de refresco real | **Defecto**: la lee al arrancar y no pide ninguna; medido un desajuste (supone 90 Hz, panel a 60). Ver [dispositivo-infinix-x6885.md](dispositivo-infinix-x6885.md) |
 | Temporización con la app propia `experience` | Verificado a 60 Hz, espacio y cámara: 0.1–1.8 % descartados, 28–29 ms |
+| Inicio de `experience` con paneles flotantes | Verificado que se dibuja en el Infinix X6885 (lanzador, apps OpenXR instaladas, hora y batería) a 60 fps. **Sin verificar**: elegir un botón con la mirada, que exige mover el teléfono |
+| 6DoF en el teléfono (Basalt monocular en el runtime) | **No funciona todavía**, apagado por defecto. Verificado: el runtime arranca con el tracker enganchado y la cámara le llega a 30 fps. Defecto abierto: el IMU deja de llegar a los 5 s porque Basalt bloquea al hilo que se lo entrega (cola de 300 muestras llena) y no sale ninguna pose. Ver issue #16 |
 | Compositor enganchado al vsync (parche 0003) | Verificado en ese dispositivo a 60 Hz: 0.2 % de frames descartados, latencia 29–32 ms |
 | Grabadora de sensores (`tools/sensor-recorder`) | Verificada en ese dispositivo: cámara, IMU y reporte del dispositivo |
 | `analyze.py`: estadísticas y exportación EuRoC | Verificado con una captura real; estimadores probados con señales sintéticas |
