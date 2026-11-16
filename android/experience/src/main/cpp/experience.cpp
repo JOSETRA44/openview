@@ -126,6 +126,9 @@ struct Experience {
     bool gazeValid=false;
     float gazeDistance=2.5f;
     uint64_t frames=0,cameraFrames=0;
+    jmethodID updateDiagnosticMethod=nullptr;
+    std::chrono::steady_clock::time_point lastDiagTime{};
+    uint32_t diagFrames=0;
 
     void javaCheck() {
         if(env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); throw std::runtime_error("Error de cámara Android"); }
@@ -142,9 +145,10 @@ struct Experience {
         panelHover=env->GetMethodID(cls,"panelHover","(IFF)I");
         panelClick=env->GetMethodID(cls,"panelClick","(II)V");
         panelRelease=env->GetMethodID(cls,"releasePanelTextures","()V");
+        updateDiagnosticMethod=env->GetMethodID(cls,"updateDiagnostic","(FFFZF)V");
         env->DeleteLocalRef(cls); javaCheck();
         if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod||!cameraRotationMethod) throw std::runtime_error("Camera JNI contract missing");
-        if(!panelCreate||!panelUpdate||!panelHover||!panelClick||!panelRelease) throw std::runtime_error("Panel JNI contract missing");
+        if(!panelCreate||!panelUpdate||!panelHover||!panelClick||!panelRelease||!updateDiagnosticMethod) throw std::runtime_error("Panel JNI contract missing");
         cameraTransformArray=env->NewFloatArray(16);
 
         PFN_xrInitializeLoaderKHR initialize=nullptr;
@@ -445,6 +449,27 @@ struct Experience {
             XrViewState viewState{XR_TYPE_VIEW_STATE}; uint32_t count=0;
             XR(xrLocateViews(session,&locate,&viewState,2,&count,views.data()));
             if(count==2 && (viewState.viewStateFlags&XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+                ++diagFrames;
+                auto nowDiag=std::chrono::steady_clock::now();
+                double elapsedDiag=std::chrono::duration<double>(nowDiag-lastDiagTime).count();
+                if(elapsedDiag>=0.5) {
+                    float fps=static_cast<float>(diagFrames/elapsedDiag);
+                    diagFrames=0;
+                    lastDiagTime=nowDiag;
+                    float hx=0.f,hy=0.f,hz=0.f;
+                    if(viewState.viewStateFlags&XR_VIEW_STATE_POSITION_VALID_BIT) {
+                        hx=(views[0].pose.position.x+views[1].pose.position.x)*0.5f;
+                        hy=(views[0].pose.position.y+views[1].pose.position.y)*0.5f;
+                        hz=(views[0].pose.position.z+views[1].pose.position.z)*0.5f;
+                    }
+                    const bool tracked=(viewState.viewStateFlags&XR_VIEW_STATE_POSITION_TRACKED_BIT)!=0;
+                    if(updateDiagnosticMethod) {
+                        env->CallVoidMethod(activity,updateDiagnosticMethod,
+                            static_cast<jfloat>(hx),static_cast<jfloat>(hy),static_cast<jfloat>(hz),
+                            static_cast<jboolean>(tracked),static_cast<jfloat>(fps));
+                        javaCheck();
+                    }
+                }
                 updatePanels(); updateInteraction(state.predictedDisplayTime,seconds); makeObjects(seconds);
                 for(uint32_t i=0;i<2;++i) {
                     auto &eye=eyes[i]; uint32_t index=0;
@@ -500,6 +525,7 @@ struct Experience {
     void run() {
         create();
         const auto started=std::chrono::steady_clock::now(); auto lastLog=started;
+        lastDiagTime=started; diagFrames=0;
         while(!stop.load()) {
             events();
             if(!running) { std::this_thread::sleep_for(std::chrono::milliseconds(20)); continue; }

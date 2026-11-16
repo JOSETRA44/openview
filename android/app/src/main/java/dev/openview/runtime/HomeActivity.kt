@@ -3,6 +3,7 @@
 package dev.openview.runtime
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Canvas
@@ -12,6 +13,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.os.Process
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
@@ -19,6 +21,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import java.util.concurrent.TimeUnit
 import org.freedesktop.monado.android_common.AboutActivity
 
 /** Product entry point. The experience remains an independent standard OpenXR client. */
@@ -94,6 +97,9 @@ class HomeActivity : Activity() {
         column.addView(action(getString(R.string.home_settings)) {
             startActivity(Intent(this, AboutActivity::class.java))
         })
+        column.addView(action(getString(R.string.home_diagnostics)) {
+            showDiagnostics()
+        })
         column.addView(label(getString(R.string.home_tracking_hint), 12f, muted).apply {
             gravity = Gravity.CENTER
         })
@@ -122,6 +128,90 @@ class HomeActivity : Activity() {
                 .putExtra("camera", camera))
         } catch (_: ActivityNotFoundException) {
             notice.text = getString(R.string.home_missing_experience)
+        }
+    }
+
+    private fun runLogcat(cmd: Array<String>): List<String>? {
+        return try {
+            val process = Runtime.getRuntime().exec(cmd)
+            val lines = process.inputStream.bufferedReader().use { it.readLines() }
+            val finished = process.waitFor(3, TimeUnit.SECONDS)
+            if (finished && process.exitValue() == 0 && lines.isNotEmpty()) lines else null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun showDiagnostics() {
+        try {
+            val uid = Process.myUid()
+            var lines = runLogcat(arrayOf("logcat", "-d", "--uid=$uid"))
+            if (lines.isNullOrEmpty()) {
+                val pid = Process.myPid()
+                lines = runLogcat(arrayOf("logcat", "-d", "--pid=$pid"))
+            }
+            val text = when {
+                lines == null -> "No se pudo obtener el registro de logcat."
+                lines.isEmpty() -> "No hay registros disponibles para UID $uid."
+                else -> lines.takeLast(300).joinToString("\n")
+            }
+            displayDiagnosticDialog(text)
+        } catch (e: Exception) {
+            displayDiagnosticDialog("Error al ejecutar diagnóstico: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    private fun displayDiagnosticDialog(logs: String) {
+        val dialogView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setBackgroundColor(Color.rgb(13, 23, 30))
+
+            val scroll = ScrollView(this@HomeActivity).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(360)
+                )
+                setBackgroundColor(Color.rgb(20, 36, 45))
+                val pad = dp(10)
+                setPadding(pad, pad, pad, pad)
+                addView(TextView(this@HomeActivity).apply {
+                    text = logs
+                    textSize = 11f
+                    typeface = Typeface.MONOSPACE
+                    setTextColor(ink)
+                    setTextIsSelectable(true)
+                })
+            }
+            addView(scroll)
+
+            val shareButton = action(getString(R.string.home_diag_share), primary = true) {
+                shareLogs(logs)
+            }
+            addView(shareButton)
+        }
+
+        try {
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.home_diagnostics))
+                .setView(dialogView)
+                .setNegativeButton(getString(R.string.home_diag_close), null)
+                .show()
+        } catch (e: Exception) {
+            notice.text = "Error al mostrar diálogo: ${e.message}"
+        }
+    }
+
+    private fun shareLogs(logs: String) {
+        try {
+            val sendIntent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_TEXT, logs)
+                type = "text/plain"
+            }
+            startActivity(Intent.createChooser(sendIntent, getString(R.string.home_diag_share)))
+        } catch (e: Exception) {
+            notice.text = "Error al compartir registros: ${e.message}"
         }
     }
 

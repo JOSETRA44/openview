@@ -11,6 +11,9 @@
     <string name="home_ready">Todo listo para explorar</string>
     <string name="home_missing_experience">Instala el APK complementario OpenView Experience de la misma compilación para entrar al espacio.</string>
     <string name="home_settings">Ajustes del visor y acerca de</string>
+    <string name="home_diagnostics">Diagnóstico</string>
+    <string name="home_diag_share">Compartir registros</string>
+    <string name="home_diag_close">Cerrar</string>
     <string name="home_tracking_hint">Seguimiento de orientación · El desplazamiento físico y los anclajes a superficies aún no están disponibles.</string>
     <string name="setup_channel_name">Configuración</string>
     <string name="setup_overlay_title">OpenView necesita un permiso más</string>
