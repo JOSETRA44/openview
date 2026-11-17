@@ -57,6 +57,25 @@ int main() {
     // Turning the short way round: from just under +pi to just over -pi is a small step.
     near("wrap", angleDelta(3.1f, -3.1f), 6.28318530718f - 6.2f, 1e-4f);
 
+    // Gaze-only placing: turning keeps the window moving, a still head places it.
+    GazeSettle settle;
+    bool placed = false;
+    for (int i = 0; i < 60 && !placed; ++i) {  // turning at ~1 rad/s for 1 s
+        const float a = i / 60.0f;
+        placed = settle.update({std::sin(a), 0, -std::cos(a)}, 1.0 / 60);
+    }
+    if (placed) { std::printf("FAIL placed while turning\n"); ++failures; }
+    int frames = 0;
+    while (!placed && frames < 300) { placed = settle.update({std::sin(1.0f), 0, -std::cos(1.0f)}, 1.0 / 60); ++frames; }
+    if (!placed) { std::printf("FAIL never placed\n"); ++failures; }
+    near("settles after ~1.2 s", frames / 60.0f, 1.2f, 0.05f);
+    near("progress full", settle.progress(), 1.0f);
+    settle.reset();
+    near("progress reset", settle.progress(), 0.0f);
+    // A head held still from the start still waits for the minimum move time.
+    for (int i = 0; i < 30; ++i) placed = settle.update({0, 0, -1}, 1.0 / 60);
+    if (placed) { std::printf("FAIL placed before the minimum\n"); ++failures; }
+
     if (failures == 0) std::printf("spatial window: ok\n");
     return failures == 0 ? 0 : 1;
 }

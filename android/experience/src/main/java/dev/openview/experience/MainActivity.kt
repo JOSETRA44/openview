@@ -47,6 +47,7 @@ class MainActivity : Activity() {
     private external fun nativeHold(handle: Long, down: Boolean)
     private external fun nativePushWindow(handle: Long, metres: Float)
     private external fun nativeResetLayout(handle: Long)
+    private external fun nativeBeginMove(handle: Long, panel: Int)
     private external fun nativeDestroy(handle: Long)
     private val engineLock = Any()
     private var engine = 0L
@@ -144,6 +145,8 @@ class MainActivity : Activity() {
      * launcher, panel 1 the status column beside it. Sizes are in texture
      * pixels; the native side decides where they hang and how big they look.
      */
+    private val statusMove by lazy { XrPanel.tile(this, "Mover", "Míralo donde lo quieras", null) { beginMove(1) } }
+
     private fun buildPanels() {
         panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800), XrPanel(this, 1000, 400))
         clockText = XrPanel.label(this, "", 150f, XrPanel.INK, bold = true)
@@ -158,7 +161,9 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
             addView(statusDiagText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
-        }, emptyList())
+            addView(statusMove.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 130)
+                .apply { topMargin = 28 })
+        }, listOf(statusMove))
         guideTitle = XrPanel.label(this, "", 72f, XrPanel.INK, bold = true).apply { gravity = Gravity.CENTER }
         guideDetail = XrPanel.label(this, "", 34f, XrPanel.ACCENT).apply { gravity = Gravity.CENTER }
         panels[2].setContent(LinearLayout(this).apply {
@@ -219,6 +224,7 @@ class MainActivity : Activity() {
         tiles += XrPanel.tile(this, "Centrar vista", "Pone el panel frente a ti", null) { recenter() }
         tiles += XrPanel.tile(this, "Fijar punto aquí", "Deja un marcador donde miras", null) { anchorPoint() }
         tiles += XrPanel.tile(this, "Prueba de seguimiento", "Te guía paso a paso", null) { startGuidedTest() }
+        tiles += XrPanel.tile(this, "Mover este panel", "Míralo donde lo quieras y quédate quieto", null) { beginMove(0) }
         tiles += XrPanel.tile(this, "Ordenar ventanas", "Vuelven a su sitio inicial", null) { resetLayout() }
         // Launching and leaving need a tap: a gaze alone must not end the session.
         for (app in immersiveApps().take(3)) {
@@ -308,7 +314,7 @@ class MainActivity : Activity() {
     fun onGrabChanged(grabbed: Boolean) {
         carrying = grabbed
         uiHandler.post {
-            status.text = if (grabbed) "Moviendo ventana · mira dónde ponerla · Volumen ± acerca o aleja · suelta para fijarla"
+            status.text = if (grabbed) "Moviendo ventana · mira dónde ponerla y quédate quieto para fijarla"
                 else "Ventana fijada. Se quedará ahí la próxima vez."
         }
     }
@@ -402,6 +408,7 @@ class MainActivity : Activity() {
     private fun recenter() { synchronized(engineLock) { if (engine != 0L) nativeRecenter(engine) } }
     fun anchorPoint() { synchronized(engineLock) { if (engine != 0L) nativeAnchor(engine) } }
     private fun activateObject() { synchronized(engineLock) { if (engine != 0L) nativeActivate(engine) } }
+    private fun beginMove(panel: Int) { synchronized(engineLock) { if (engine != 0L) nativeBeginMove(engine, panel) } }
     private fun resetLayout() { synchronized(engineLock) { if (engine != 0L) nativeResetLayout(engine) } }
     private fun hold(down: Boolean) { synchronized(engineLock) { if (engine != 0L) nativeHold(engine, down) } }
     private fun pushWindow(metres: Float) { synchronized(engineLock) { if (engine != 0L) nativePushWindow(engine, metres) } }

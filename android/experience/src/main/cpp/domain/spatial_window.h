@@ -94,4 +94,48 @@ private:
     bool active_ = false;
 };
 
+/**
+ * Ends a gaze-only move: the window is placed once the head has stayed nearly
+ * still for kSettleSeconds. No button is needed, so it works on any phone or
+ * viewer, including ones whose touch and keys the runtime's window owns.
+ * Turning faster than kStillRadPerSecond restarts the countdown.
+ */
+class GazeSettle {
+public:
+    static constexpr double kSettleSeconds = 1.2;
+    //! Do not place in the first moments of a move: the user is still turning towards the target.
+    static constexpr double kMinMoveSeconds = 0.8;
+    static constexpr float kStillRadPerSecond = 0.25f;
+
+    void reset() {
+        elapsed_ = still_ = 0;
+        have_ = false;
+    }
+
+    //! Returns true once the window should be placed.
+    bool update(GazeVector direction, double dt) {
+        elapsed_ += dt;
+        const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y +
+                                       direction.z * direction.z);
+        if (!(length > 1e-6f)) return false;
+        const GazeVector d{direction.x / length, direction.y / length, direction.z / length};
+        if (have_ && dt > 0) {
+            const float dot = std::clamp(d.x * last_.x + d.y * last_.y + d.z * last_.z, -1.0f, 1.0f);
+            const float speed = std::acos(dot) / static_cast<float>(dt);
+            still_ = speed < kStillRadPerSecond ? still_ + dt : 0.0;
+        }
+        last_ = d;
+        have_ = true;
+        return elapsed_ >= kMinMoveSeconds && still_ >= kSettleSeconds;
+    }
+
+    //! 0 to 1 while the head is held still, for a ring that fills up.
+    float progress() const { return static_cast<float>(std::clamp(still_ / kSettleSeconds, 0.0, 1.0)); }
+
+private:
+    GazeVector last_{0, 0, -1};
+    bool have_ = false;
+    double elapsed_ = 0, still_ = 0;
+};
+
 } // namespace openview

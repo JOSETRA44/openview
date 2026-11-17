@@ -96,6 +96,10 @@ struct Experience {
     std::atomic<bool> holdDown{false}, resetLayout{false};
     std::atomic<float> pendingPush{0.f};
     openview::WindowGrab grab;
+    // A move started from a "Mover" tile: no button is held, a still head places it.
+    std::atomic<int> moveRequest{-1};
+    bool gazeMove=false;
+    openview::GazeSettle settle;
     int grabbedPanel=-1;
     double holdStart=-1, lastInteraction=-1;
     jobject activity=nullptr;
@@ -456,7 +460,9 @@ struct Experience {
             auto &panel=panels[grabbedPanel];
             const auto moved=grab.update(origin,direction,dt);
             panel.x=moved.x; panel.y=moved.y; panel.z=moved.z; panel.yaw=moved.yaw;
-            if(!held) {
+            const bool release=gazeMove?(settle.update(direction,dt)||trigger):!held;
+            if(release) {
+                gazeMove=false;
                 grab.end(); saveLayout(grabbedPanel);
                 INFO("window %d placed at %.2f %.2f %.2f yaw %.2f",grabbedPanel,panel.x,panel.y,panel.z,panel.yaw);
                 env->CallVoidMethod(activity,grabChangedMethod,static_cast<jboolean>(false)); javaCheck();
@@ -465,6 +471,13 @@ struct Experience {
             // No dwell or clicks while carrying a window.
             gaze.reset(); activate=false;
             hitPanel=-1;
+        } else if(const int request=moveRequest.exchange(-1); request>=0 && request<kPanels && !panels[request].headLocked) {
+            auto &panel=panels[request];
+            grab.begin({panel.x,panel.y,panel.z,panel.yaw},origin);
+            grabbedPanel=request; gazeMove=true; settle.reset(); pendingPush=0.f;
+            INFO("window %d moving with the gaze at %.2f m",request,grab.distance());
+            env->CallVoidMethod(activity,grabChangedMethod,static_cast<jboolean>(true)); javaCheck();
+            gaze.reset(); hitPanel=-1;
         } else if(held && hitPanel>=0 && seconds-holdStart>=kGrabHoldSeconds) {
             auto &panel=panels[hitPanel];
             grab.begin({panel.x,panel.y,panel.z,panel.yaw},origin);
@@ -494,10 +507,14 @@ struct Experience {
         const float inner=.008f*gazeDistance,outer=.012f*gazeDistance;
         for(int i=0;i<48;++i) {
             const float a=i*2*PI/48,b=(i+1)*2*PI/48;
-            const bool filled=hit>=0 && float(i)/48<gaze.progress;
-            const float r=filled?.98f:hit>=0?.35f:.75f;
-            const float g=filled?.74f:hit>=0?.95f:.85f;
-            const float blue=filled?.30f:hit>=0?.76f:.88f;
+            // Carrying a window, the ring fills while the head holds still to place it.
+            const bool carrying=grab.active();
+            const float fill=carrying?(gazeMove?settle.progress():0.f):gaze.progress;
+            const bool targeted=hit>=0||carrying;
+            const bool filled=targeted && float(i)/48<fill;
+            const float r=filled?.98f:targeted?.35f:.75f;
+            const float g=filled?.74f:targeted?.95f:.85f;
+            const float blue=filled?.30f:targeted?.76f:.88f;
             for(auto p:std::array<std::array<float,2>,6>{{{inner*std::cos(a),inner*std::sin(a)},
                 {outer*std::cos(a),outer*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
                 {inner*std::cos(a),inner*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
@@ -734,6 +751,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nati
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativePushWindow(JNIEnv*,jobject,jlong handle,jfloat metres) {
     auto *app=reinterpret_cast<Experience*>(handle); app->pendingPush=app->pendingPush.load()+metres;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeBeginMove(JNIEnv*,jobject,jlong handle,jint panel) {
+    reinterpret_cast<Experience*>(handle)->moveRequest=panel;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeResetLayout(JNIEnv*,jobject,jlong handle) {
     reinterpret_cast<Experience*>(handle)->resetLayout=true;
