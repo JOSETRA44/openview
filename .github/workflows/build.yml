@@ -134,7 +134,9 @@ jobs:
       - name: Android client build tools
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
       - name: Build OpenView experience
-        run: ./gradlew --no-daemon :experience:assembleDebug
+        run: ./gradlew --no-daemon :experience:assembleDebug :experience:testDebugUnitTest
+      - name: Tracking-test analyser
+        run: python3 -m unittest discover -s tools/tracking-test -p 'test_*.py' -v
       - uses: actions/upload-artifact@v4
         with:
           name: openview-experience-debug-apk

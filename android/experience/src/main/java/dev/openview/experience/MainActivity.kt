@@ -21,6 +21,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.openview.experience.test.GuidedTestController
+import dev.openview.experience.test.TestStep
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -37,6 +39,7 @@ class MainActivity : Activity() {
     private external fun nativeAnchor(handle: Long)
     private external fun nativeCamera(handle: Long, enabled: Boolean)
     private external fun nativeActivate(handle: Long)
+    private external fun nativeTestStep(handle: Long, step: Int)
     private external fun nativeDestroy(handle: Long)
     private val engineLock = Any()
     private var engine = 0L
@@ -66,6 +69,12 @@ class MainActivity : Activity() {
     private lateinit var detailText: TextView
     private lateinit var diagText: TextView
     private lateinit var statusDiagText: TextView
+    private lateinit var guideTitle: TextView
+    private lateinit var guideDetail: TextView
+    private lateinit var guidedTest: GuidedTestController
+    /** Index of the running test step, mirrored to native code whenever an engine starts. */
+    private var testStep = -1
+    private var pendingTest = false
     private val uiHandler = Handler(android.os.Looper.getMainLooper())
     private val clockTick = object : Runnable {
         override fun run() {
@@ -77,6 +86,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wantsCamera = savedInstanceState?.getBoolean("camera") ?: intent.getBooleanExtra("camera", false)
+        // `adb shell am start -n dev.openview.experience/.MainActivity --ez test true` starts the guided test.
+        pendingTest = savedInstanceState == null && intent.getBooleanExtra("test", false)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
@@ -105,11 +116,15 @@ class MainActivity : Activity() {
                 text = "Fijar punto aquí"; setOnClickListener { anchorPoint() }
             })
             addView(Button(this@MainActivity).apply {
+                text = "Prueba de seguimiento"; setOnClickListener { startGuidedTest() }
+            })
+            addView(Button(this@MainActivity).apply {
                 text = "Cámara / espacio"; setOnClickListener { setCamera(!wantsCamera) }
             })
             addView(Button(this@MainActivity).apply { text = "Salir"; setOnClickListener { finish() } })
         })
         buildPanels()
+        guidedTest = GuidedTestController(this, guidedTestListener)
     }
 
     /*
@@ -118,7 +133,7 @@ class MainActivity : Activity() {
      * pixels; the native side decides where they hang and how big they look.
      */
     private fun buildPanels() {
-        panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800))
+        panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800), XrPanel(this, 1000, 400))
         clockText = XrPanel.label(this, "", 150f, XrPanel.INK, bold = true)
         detailText = XrPanel.label(this, "", 34f, XrPanel.MUTED).apply { setLineSpacing(14f, 1f) }
         statusDiagText = XrPanel.label(this, "Pos: 0.00, 0.00, 0.00 m · NO TRACKED · -- fps", 24f, XrPanel.ACCENT, bold = true)
@@ -132,8 +147,42 @@ class MainActivity : Activity() {
             addView(statusDiagText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
         }, emptyList())
+        guideTitle = XrPanel.label(this, "", 72f, XrPanel.INK, bold = true).apply { gravity = Gravity.CENTER }
+        guideDetail = XrPanel.label(this, "", 34f, XrPanel.ACCENT).apply { gravity = Gravity.CENTER }
+        panels[2].setContent(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            background = XrPanel.background(this@MainActivity)
+            setPadding(40, 30, 40, 30)
+            addView(guideTitle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(guideDetail, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 22 })
+        }, emptyList())
         refreshHomePanel()
         updateStatusPanel()
+    }
+
+    private val guidedTestListener = object : GuidedTestController.Listener {
+        override fun onStep(index: Int, step: TestStep?) {
+            testStep = index
+            synchronized(engineLock) { if (engine != 0L) nativeTestStep(engine, index) }
+        }
+        override fun onTick(step: TestStep, index: Int, count: Int, secondsLeft: Int) {
+            guideTitle.text = step.title
+            guideDetail.text = "Paso ${index + 1} de $count · $secondsLeft s"
+            status.text = "Prueba de seguimiento · ${step.title} · $secondsLeft s"
+            panels[2].redraw()
+        }
+        override fun onFinished(cancelled: Boolean) {
+            status.text = if (cancelled) "Prueba cancelada." else "Prueba terminada. Los datos quedaron en el registro."
+        }
+    }
+
+    /** Recentres first, so that "forward" in the log is where the user faces now. */
+    private fun startGuidedTest() {
+        if (guidedTest.running) return
+        recenter()
+        guidedTest.start()
     }
 
     /** Apps that declare themselves immersive OpenXR apps, the same way headsets find them. */
@@ -157,12 +206,14 @@ class MainActivity : Activity() {
         }
         tiles += XrPanel.tile(this, "Centrar vista", "Pone el panel frente a ti", null) { recenter() }
         tiles += XrPanel.tile(this, "Fijar punto aquí", "Deja un marcador donde miras", null) { anchorPoint() }
+        tiles += XrPanel.tile(this, "Prueba de seguimiento", "Te guía paso a paso", null) { startGuidedTest() }
+        // Launching and leaving need a tap: a gaze alone must not end the session.
         for (app in immersiveApps().take(3)) {
             val label = app.loadLabel(packageManager).toString()
             val icon = try { app.loadIcon(packageManager) } catch (e: Exception) { null }
-            tiles += XrPanel.tile(this, label, "App de realidad virtual", icon) { launch(app) }
+            tiles += XrPanel.tile(this, label, "Toca para abrir", icon, dwell = false) { launch(app) }
         }
-        tiles += XrPanel.tile(this, "Salir", "Cierra OpenView", null) { finish() }
+        tiles += XrPanel.tile(this, "Salir", "Toca para cerrar OpenView", null, dwell = false) { finish() }
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -225,7 +276,7 @@ class MainActivity : Activity() {
     fun panelHover(panel: Int, u: Float, v: Float): Int = panels.getOrNull(panel)?.hover(u, v) ?: -1
 
     @Suppress("unused")
-    fun panelClick(panel: Int, index: Int) { panels.getOrNull(panel)?.click(index) }
+    fun panelClick(panel: Int, index: Int, fromDwell: Boolean) { panels.getOrNull(panel)?.click(index, fromDwell) }
 
     @Suppress("unused")
     fun releasePanelTextures() { panels.forEach { it.release() } }
@@ -258,6 +309,11 @@ class MainActivity : Activity() {
         cameraAllowed.set(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         startEngine()
         if (wantsCamera && !cameraAllowed.get()) requestPermissions(arrayOf(Manifest.permission.CAMERA), 10)
+        if (pendingTest) {
+            pendingTest = false
+            // Give the session a moment to reach FOCUSED so the recentre lands.
+            uiHandler.postDelayed({ if (resumed) startGuidedTest() }, 1500)
+        }
     }
 
     private fun startEngine() {
@@ -265,6 +321,7 @@ class MainActivity : Activity() {
             if (worker != null || !resumed || failed || isFinishing || isDestroyed) return
             engine = nativeCreate()
             nativeCamera(engine, wantsCamera && cameraAllowed.get())
+            nativeTestStep(engine, testStep)
             val handle = engine
             worker = Thread({
                 val error = nativeRun(handle)
@@ -286,10 +343,15 @@ class MainActivity : Activity() {
     override fun onPause() {
         resumed = false
         uiHandler.removeCallbacks(clockTick)
+        guidedTest.cancel()
         synchronized(engineLock) { if (engine != 0L) nativeStop(engine) }
         // Render thread owns the SurfaceTexture and releases it while EGL remains current.
         closeCameraDevice()
         super.onPause()
+    }
+    override fun onDestroy() {
+        guidedTest.shutdown()
+        super.onDestroy()
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("camera", wantsCamera)
