@@ -6,15 +6,16 @@ phone: metres of drift after one turn). Where the phone has ARCore, the
 factory now asks OpenView's ARCore tracker (tracking/arcore, linked into the
 prober by OpenView's CMake when OPENVIEW_HAVE_ARCORE is set) and only falls
 back to the SLAM camera tracker when ARCore is not available. ARCore owns the
-camera, so the SLAM frameserver is not opened while it runs.
+camera, so the SLAM frameserver is not opened while it runs, and the factory
+only calls t_slam_start on its own SLAM tracker.
 ANDROID_TRACKER=auto|arcore|slam (debug.xrt.ANDROID_TRACKER) chooses.
 
 ---
 diff --git a/src/xrt/state_trackers/prober/p_tracking.c b/src/xrt/state_trackers/prober/p_tracking.c
-index 5f0d5aa..676f8cb 100644
+index 5f0d5aa..0a346a2 100644
 --- a/src/xrt/state_trackers/prober/p_tracking.c
 +++ b/src/xrt/state_trackers/prober/p_tracking.c
-@@ -46,6 +46,13 @@ DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
+@@ -46,6 +46,22 @@ DEBUG_GET_ONCE_NUM_OPTION(rs_source_index, "RS_SOURCE_INDEX", -1)
  #include <unistd.h>
  // Off until 6DoF tracks on a device: setprop debug.xrt.ANDROID_SLAM_CAMERA true
  DEBUG_GET_ONCE_BOOL_OPTION(android_slam_camera, "ANDROID_SLAM_CAMERA", true)
@@ -25,10 +26,19 @@ index 5f0d5aa..676f8cb 100644
 +#ifdef OPENVIEW_HAVE_ARCORE
 +#include "openview/arcore_tracker.h"
 +#endif
++#endif
++
++/*!
++ * The factory's tracker is not Monado's SLAM tracker (ARCore is already
++ * running): t_slam_start must not be called on it.
++ */
++XRT_MAYBE_UNUSED static bool p_xts_is_external = false;
++
++#ifdef XRT_BUILD_DRIVER_ANDROID
  
  #ifdef XRT_FEATURE_SLAM
  /*!
-@@ -331,6 +338,25 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
+@@ -331,6 +347,26 @@ p_factory_ensure_slam_frameserver(struct p_factory *fact)
  	// SLAM tracker with Android camera frameserver
  
  #ifdef XRT_BUILD_DRIVER_ANDROID
@@ -39,6 +49,7 @@ index 5f0d5aa..676f8cb 100644
 +		const char *choice = debug_get_option_android_tracker();
 +		if (strcmp(choice, "slam") != 0) {
 +			if (ov_arcore_tracker_create(&fact->xfctx, &fact->xts) == 0) {
++				p_xts_is_external = true;
 +				U_LOG_I("Head tracker: ARCore");
 +				return true;
 +			}
@@ -54,3 +65,14 @@ index 5f0d5aa..676f8cb 100644
  	if (debug_get_bool_option_android_slam_camera()) {
  #ifdef XRT_FEATURE_SLAM
  		// The backend ships inside the runtime APK, so dlopen finds it by
+@@ -503,7 +539,9 @@ p_factory_create_tracked_slam(struct xrt_tracking_factory *xfact, struct xrt_tra
+ 	}
+ 
+ 	fact->started_xts = true;
+-	t_slam_start(xts);
++	if (!p_xts_is_external) {
++		t_slam_start(xts);
++	}
+ 	*out_xts = xts;
+ 
+ 	return 0;
