@@ -66,7 +66,7 @@ class AnalyseTest(unittest.TestCase):
     def test_moving_while_turning_is_reported(self):
         def wobble(step, i):
             x, y, z = ideal(step, i)
-            return (x + (0.1 if i % 2 else -0.1), y, z) if step == "turn" else (x, y, z)
+            return (x + 0.02 * i, y, z) if step == "turn" else (x, y, z)  # drifts 38 cm while turning
         self.assertEqual(self.step(self.report(wobble), "turn")["grade"], "MAL")
 
     def test_render_mentions_every_step(self):

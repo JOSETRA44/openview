@@ -38,7 +38,8 @@ SCALE_GOOD, SCALE_OK = 0.10, 0.25          # |ratio - 1|
 DIRECTION_GOOD_DEG, DIRECTION_OK_DEG = 15.0, 30.0
 JUMP_SPEED_M_S = 2.5                        # faster than a careful walk in a headset
 JUMP_STEP_M = 0.25                          # one sample to the next
-TURN_PATH_OK_M = 0.25                       # turning the head moves it a little, not metres
+# Turning the head swings the eyes around the neck (~0.1 m); more is invented translation.
+TURN_SPREAD_GOOD_M, TURN_SPREAD_OK_M = 0.12, 0.25
 
 
 @dataclass
@@ -108,8 +109,11 @@ def analyse(steps: list[Step], events: list[str]) -> dict:
             drift = max(norm(sub(s[1:4], centre)) for s in step.samples)
             entry.update(drift_m=round(drift, 3), grade=grade(drift, STILL_GOOD_M, STILL_OK_M))
         if step.kind == "ROTATE" and step.samples:
-            path = sum(norm(sub(b[1:4], a[1:4])) for a, b in zip(step.samples, step.samples[1:]))
-            entry.update(path_m=round(path, 3), grade="BIEN" if path <= TURN_PATH_OK_M else "MAL")
+            pts = [s[1:4] for s in step.samples]
+            path = sum(norm(sub(b, a)) for a, b in zip(pts, pts[1:]))
+            spread = max(norm(sub(p, pts[0])) for p in pts)
+            entry.update(path_m=round(path, 3), spread_m=round(spread, 3),
+                         grade=grade(spread, TURN_SPREAD_GOOD_M, TURN_SPREAD_OK_M))
         report["steps"].append(entry)
 
     # Moves: between the settled positions of the neighbouring still steps.
@@ -170,7 +174,8 @@ def render(report: dict) -> str:
         elif "return_error_m" in e:
             detail = f"vuelve a {e['return_error_m'] * 100:.1f} cm"
         elif "path_m" in e:
-            detail = f"recorrido al girar {e['path_m'] * 100:.0f} cm"
+            detail = (f"se aleja hasta {e['spread_m'] * 100:.0f} cm al girar"
+                      f" · temblor acumulado {e['path_m'] * 100:.0f} cm")
         out.append(f"{e['id']:<17} {e['kind']:<8} {e['samples']:>8} {e['tracked'] * 100:>8.0f} %  "
                    f"{e.get('grade', ''):<10} {detail}")
     out.append(f"Rastreado en total: {report['tracked_fraction'] * 100:.0f} %")
@@ -185,22 +190,34 @@ def render(report: dict) -> str:
     return "\n".join(out)
 
 
+KEEP = ("OV_TEST", "SLAM ", "OV_VIO", "OpenViewXR")
+
+
 def run_on_device(args) -> list[str]:
+    """Streams logcat while the test runs: phones log so much that a dump taken at
+    the end has already rotated the first steps out of the ring buffer."""
     adb = [args.adb, "-s", args.serial]
-    subprocess.run(adb + ["shell", "am force-stop dev.openview.experience; logcat -c; "
-                          "input keyevent KEYCODE_WAKEUP; "
+    subprocess.run(adb + ["logcat", "-c"], check=True, capture_output=True)
+    reader = subprocess.Popen(adb + ["logcat", "-v", "time"], stdout=subprocess.PIPE, text=True,
+                              encoding="utf-8", errors="replace")
+    subprocess.run(adb + ["shell", "am force-stop dev.openview.experience; input keyevent KEYCODE_WAKEUP; "
                           "am start -n dev.openview.experience/.MainActivity --ez camera false --ez test true"],
                    check=True, capture_output=True)
     deadline = time.time() + args.timeout
     lines: list[str] = []
-    while time.time() < deadline:
-        time.sleep(3)
-        lines = subprocess.run(adb + ["logcat", "-d", "-v", "time"], capture_output=True, text=True,
-                               encoding="utf-8", errors="replace").stdout.splitlines()
-        if any("OV_TEST_END" in l or "OV_TEST_CANCEL" in l for l in lines):
-            break
-        print(f"\r{sum('OV_TEST t=' in l for l in lines)} muestras…", end="", file=sys.stderr)
-    print(file=sys.stderr)
+    samples = 0
+    try:
+        for line in reader.stdout:
+            if any(k in line for k in KEEP):
+                lines.append(line.rstrip("\n"))
+                if "OV_TEST t=" in line:
+                    samples += 1
+                    if samples % 75 == 0:
+                        print(f"{samples} muestras", file=sys.stderr)
+            if "OV_TEST_END" in line or "OV_TEST_CANCEL" in line or time.time() > deadline:
+                break
+    finally:
+        reader.kill()
     if args.save:
         Path(args.save).write_text("\n".join(lines), encoding="utf-8")
     return lines
