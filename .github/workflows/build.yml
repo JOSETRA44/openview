@@ -42,6 +42,8 @@ jobs:
           python3 tools/sensor-recorder/test_analyze.py
           python3 tools/bench/test_ate.py
           python3 tools/display-timing/test_measure.py
+          cc -std=c11 -Wall -Wextra -Werror -I tracking/arcore/src tracking/arcore/tests/arcore_convention_test.c -o /tmp/arcore_convention_test -lm
+          /tmp/arcore_convention_test
           c++ -std=c++17 android/experience/tests/camera_uv_test.cpp -o /tmp/camera_uv_test
           /tmp/camera_uv_test
 

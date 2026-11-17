@@ -141,6 +141,8 @@ dependencies {
     implementation project(':src:xrt:ipc')
     implementation project(':src:xrt:targets:android_common')
 
+    // Head position on phones that have it, see tracking/arcore.
+    implementation "com.google.ar:core:1.47.0"
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlinVersion"
     implementation "androidx.constraintlayout:constraintlayout:$androidxConstraintLayoutVersion"

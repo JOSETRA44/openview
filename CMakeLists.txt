@@ -61,4 +61,14 @@ monado_set_options(
 	)
 
 add_subdirectory(${MONADO_ROOT} monado)
+
+# OpenView's own head trackers, wired into Monado's tracking factory by
+# patches/monado/0010. ARCore runs where the phone has it; the factory falls
+# back to the SLAM camera tracker otherwise.
+if(ANDROID AND TARGET st_prober)
+	add_subdirectory(tracking/arcore)
+	target_link_libraries(st_prober PRIVATE openview_arcore)
+	target_compile_definitions(st_prober PRIVATE OPENVIEW_HAVE_ARCORE)
+endif()
+
 add_subdirectory(runtime)
