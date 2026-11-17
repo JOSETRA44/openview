@@ -34,6 +34,7 @@ class MainActivity : Activity() {
     private external fun nativeRun(handle: Long): String?
     private external fun nativeStop(handle: Long)
     private external fun nativeRecenter(handle: Long)
+    private external fun nativeAnchor(handle: Long)
     private external fun nativeCamera(handle: Long, enabled: Boolean)
     private external fun nativeActivate(handle: Long)
     private external fun nativeDestroy(handle: Long)
@@ -44,6 +45,7 @@ class MainActivity : Activity() {
     private var failed = false
     private var wantsCamera = false
     private lateinit var status: TextView
+    private lateinit var diagnostic: TextView
     private val cameraLock = Any()
     private var cameraThread: HandlerThread? = null
     private var camera: CameraDevice? = null
@@ -83,15 +85,24 @@ class MainActivity : Activity() {
                 "o toca la pantalla.\nVolumen +: centrar · Volumen −: cámara · Atrás: salir"
             textSize = 18f; setTextColor(Color.rgb(164, 234, 207)); gravity = Gravity.CENTER
         }
+        diagnostic = TextView(this).apply {
+            text = "Pos: — · sin sesión · -- fps"
+            textSize = 20f; setTextColor(XrPanel.ACCENT); gravity = Gravity.CENTER
+            setTypeface(null, android.graphics.Typeface.BOLD)
+        }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
             setBackgroundColor(Color.rgb(13, 23, 30)); setPadding(24, 24, 24, 24)
             addView(status)
+            addView(diagnostic)
             addView(Button(this@MainActivity).apply {
                 text = "Activar objeto señalado"; setOnClickListener { activateObject() }
             })
             addView(Button(this@MainActivity).apply {
                 text = "Centrar vista"; setOnClickListener { recenter() }
+            })
+            addView(Button(this@MainActivity).apply {
+                text = "Fijar punto aquí"; setOnClickListener { anchorPoint() }
             })
             addView(Button(this@MainActivity).apply {
                 text = "Cámara / espacio"; setOnClickListener { setCamera(!wantsCamera) }
@@ -145,6 +156,7 @@ class MainActivity : Activity() {
             setCamera(!wantsCamera); refreshHomePanel()
         }
         tiles += XrPanel.tile(this, "Centrar vista", "Pone el panel frente a ti", null) { recenter() }
+        tiles += XrPanel.tile(this, "Fijar punto aquí", "Deja un marcador donde miras", null) { anchorPoint() }
         for (app in immersiveApps().take(3)) {
             val label = app.loadLabel(packageManager).toString()
             val icon = try { app.loadIcon(packageManager) } catch (e: Exception) { null }
@@ -226,6 +238,7 @@ class MainActivity : Activity() {
         uiHandler.post {
             val status = if (tracked) "POSITION_TRACKED" else "NO TRACKED"
             val text = String.format(java.util.Locale.US, "Pos: %.2f, %.2f, %.2f m · %s · %.0f fps", x, y, z, status, fps)
+            diagnostic.text = text
             if (::diagText.isInitialized) {
                 diagText.text = text
                 if (panels.isNotEmpty()) panels[0].redraw()
@@ -296,6 +309,7 @@ class MainActivity : Activity() {
         }
     }
     private fun recenter() { synchronized(engineLock) { if (engine != 0L) nativeRecenter(engine) } }
+    fun anchorPoint() { synchronized(engineLock) { if (engine != 0L) nativeAnchor(engine) } }
     private fun activateObject() { synchronized(engineLock) { if (engine != 0L) nativeActivate(engine) } }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         // Some compositors own the touch window. Dwell remains available in that case.

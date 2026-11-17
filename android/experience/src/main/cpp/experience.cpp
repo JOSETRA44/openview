@@ -85,7 +85,7 @@ struct Eye {
 };
 
 struct Experience {
-    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true}, activate{false};
+    std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true}, activate{false}, anchorRequested{false};
     jobject activity=nullptr;
     JavaVM *vm=nullptr;
     JNIEnv *env=nullptr;
@@ -107,6 +107,9 @@ struct Experience {
     int cameraDisplayDegrees=0;
     std::vector<Vertex> grid,objects,reticle;
     openview::GazeDwell gaze;
+    openview::GazeVector lastGazeOrigin{},lastGazeDirection{};
+    bool lastGazePositionValid=false;
+    std::vector<openview::GazeVector> anchors;
     // Floating panels: Android views drawn into external textures by the activity.
     // Positions are metres in the recentred local space; the viewer sits at the origin
     // looking down -Z. Panel 0 is the home, panel 1 the status column angled beside it.
@@ -379,6 +382,7 @@ struct Experience {
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
         XR(xrLocateSpace(head,local,time,&location));
         gazeValid=focused && (location.locationFlags&XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+        lastGazePositionValid=gazeValid && (location.locationFlags&XR_SPACE_LOCATION_POSITION_VALID_BIT);
         if(!gazeValid) { gaze.reset(); reticle.clear(); return; }
         if(!(location.locationFlags&XR_SPACE_LOCATION_POSITION_VALID_BIT)) location.pose.position={0,0,0};
         // The runtime supplies this pose. In 3DoF it has no measured translation;
@@ -386,6 +390,7 @@ struct Experience {
         gazePose=poseMatrix(location.pose);
         openview::GazeVector origin{gazePose[12],gazePose[13],gazePose[14]};
         openview::GazeVector direction{-gazePose[8],-gazePose[9],-gazePose[10]};
+        lastGazeOrigin=origin; lastGazeDirection=direction;
         int hitPanel=-1; float nearest=20.f,hitU=0,hitV=0;
         for(int i=0;i<kPanels;++i) {
             float u=0,v=0; const float distance=rayPanel(panels[i],origin,direction,u,v);
@@ -432,6 +437,30 @@ struct Experience {
                 objects.push_back({p[0],p[1]+.2f,-6.f,.2f,.55f,.5f});
         }
     }
+    void appendAnchors() {
+        for(const auto &point:anchors) {
+            const float r=.06f;
+            const std::array<openview::GazeVector,4> ring{{{r,0,0},{0,0,r},{-r,0,0},{0,0,-r}}};
+            for(int i=0;i<4;++i) {
+                const auto &a=ring[i], &b=ring[(i+1)%4];
+                for(float y:{-r,r}) {
+                    objects.push_back({point.x,point.y+y,point.z,1.f,.72f,.25f});
+                    objects.push_back({point.x+a.x,point.y,point.z+a.z,1.f,.72f,.25f});
+                    objects.push_back({point.x+b.x,point.y,point.z+b.z,1.f,.72f,.25f});
+                }
+            }
+            for(int i=0;i<8;++i) {
+                const float a=i*2*PI/8,b=(i+1)*2*PI/8;
+                const float ax=point.x+.01f*std::cos(a),az=point.z+.01f*std::sin(a);
+                const float bx=point.x+.01f*std::cos(b),bz=point.z+.01f*std::sin(b);
+                for(auto vertex:std::array<Vertex,6>{{{ax,0,az,.45f,.32f,.11f},
+                    {bx,0,bz,.45f,.32f,.11f},{bx,point.y,bz,.45f,.32f,.11f},
+                    {ax,0,az,.45f,.32f,.11f},{bx,point.y,bz,.45f,.32f,.11f},
+                    {ax,point.y,az,.45f,.32f,.11f}}})
+                    objects.push_back(vertex);
+            }
+        }
+    }
     void frame(double seconds) {
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState state{XR_TYPE_FRAME_STATE}; XR(xrWaitFrame(session,&wait,&state));
         XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO}; XR(xrBeginFrame(session,&begin));
@@ -471,6 +500,14 @@ struct Experience {
                     }
                 }
                 updatePanels(); updateInteraction(state.predictedDisplayTime,seconds); makeObjects(seconds);
+                if(anchorRequested.exchange(false) && lastGazePositionValid) {
+                    const openview::GazeVector point{lastGazeOrigin.x+lastGazeDirection.x*1.5f,
+                        lastGazeOrigin.y+lastGazeDirection.y*1.5f,lastGazeOrigin.z+lastGazeDirection.z*1.5f};
+                    if(anchors.size()>=20) anchors.erase(anchors.begin());
+                    anchors.push_back(point);
+                    INFO("anchor placed at %.2f %.2f %.2f (total %d)",point.x,point.y,point.z,static_cast<int>(anchors.size()));
+                }
+                appendAnchors();
                 for(uint32_t i=0;i<2;++i) {
                     auto &eye=eyes[i]; uint32_t index=0;
                     XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO}; XR(xrAcquireSwapchainImage(eye.swapchain,&acquire,&index));
@@ -588,6 +625,9 @@ extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nati
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeRecenter(JNIEnv*,jobject,jlong handle) {
     reinterpret_cast<Experience*>(handle)->recenter=true;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeAnchor(JNIEnv*,jobject,jlong handle) {
+    reinterpret_cast<Experience*>(handle)->anchorRequested=true;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeCamera(JNIEnv*,jobject,jlong handle,jboolean value) {
     reinterpret_cast<Experience*>(handle)->cameraWanted=value;
