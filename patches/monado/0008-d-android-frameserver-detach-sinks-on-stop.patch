@@ -1,0 +1,109 @@
+diff --git a/src/xrt/drivers/android/android_camera_fs.c b/src/xrt/drivers/android/android_camera_fs.c
+--- a/src/xrt/drivers/android/android_camera_fs.c
++++ b/src/xrt/drivers/android/android_camera_fs.c
+@@ -110,6 +110,13 @@
+ 
+ 	struct xrt_slam_sinks sinks;
+ 	bool is_running;
++	// Guarded by imu_lock. Once true, camera and IMU callbacks stop pushing
++	// into the sinks: acfs_stop sets it before any teardown begins, and the
++	// pushes themselves hold imu_lock, so a callback already in flight
++	// either completes against a live tracker or drops its data. Without
++	// this, a late frame reached t_slam_receive_cam0 after the tracker was
++	// destroyed and crashed the service on shutdown (SIGSEGV, 2026-11-17).
++	bool sinks_detached;
+ 
+ 	// Camera state, only valid while running.
+ 	ACameraManager *manager;
+@@ -255,7 +262,7 @@
+ 	int64_t timestamp = 0;
+ 	AImage_getTimestamp(image, &timestamp);
+ 
+-	if (width == CAM_WIDTH && height == CAM_HEIGHT && y_plane != NULL && acfs->sinks.cams[0] != NULL) {
++	if (width == CAM_WIDTH && height == CAM_HEIGHT && y_plane != NULL) {
+ 		struct xrt_frame *xf = NULL;
+ 		u_frame_create_one_off(XRT_FORMAT_L8, CAM_WIDTH, CAM_HEIGHT, &xf);
+ 		if (xf != NULL) {
+@@ -271,14 +278,19 @@
+ 			xf->source_id = ANDROID_CAMERA_FS_SOURCE_ID;
+ 
+ 			int64_t image_ns = xf->timestamp;
+-			xrt_sink_push_frame(acfs->sinks.cams[0], xf);
+-			xrt_frame_reference(&xf, NULL);
+-
++			// Push under imu_lock, the same lock acfs_stop takes to
++			// detach the sinks: the frame is never pushed into a
++			// tracker that is being destroyed.
+ 			os_mutex_lock(&acfs->imu_lock);
+-			acfs->last_image_ns = image_ns;
+-			acfs->frames_pushed++;
++			if (!acfs->sinks_detached && acfs->sinks.cams[0] != NULL) {
++				xrt_sink_push_frame(acfs->sinks.cams[0], xf);
++				acfs->last_image_ns = image_ns;
++				acfs->frames_pushed++;
++				acfs->frame_count++;
++			}
+ 			os_mutex_unlock(&acfs->imu_lock);
+-			acfs->frame_count++;
++			xrt_frame_reference(&xf, NULL);
++
+ 			acfs_report_stats(acfs);
+ 		}
+ 	}
+@@ -296,18 +308,14 @@
+ static void
+ acfs_push_imu(struct android_camera_fs *acfs, const ASensorEvent *event)
+ {
+-	if (acfs->sinks.imus[0] == NULL) {
+-		return;
+-	}
+-
++	// Same rule as the camera path: push under imu_lock and never into
++	// detached sinks, so shutdown cannot race a sample into a dead tracker.
+ 	os_mutex_lock(&acfs->imu_lock);
+-	struct xrt_vec3 accel = acfs->last_accel;
+-	bool have_accel = acfs->have_accel;
+-	os_mutex_unlock(&acfs->imu_lock);
+-
+-	if (!have_accel) {
++	if (acfs->sinks_detached || acfs->sinks.imus[0] == NULL || !acfs->have_accel) {
++		os_mutex_unlock(&acfs->imu_lock);
+ 		return;
+ 	}
++	struct xrt_vec3 accel = acfs->last_accel;
+ 
+ 	struct xrt_imu_sample sample = {0};
+ 	sample.timestamp_ns = acfs_time_to_monotonic_ns(event->timestamp);
+@@ -319,7 +327,6 @@
+ 	sample.gyro_rad_secs.z = (double)event->vector.z;
+ 
+ 	xrt_sink_push_imu(acfs->sinks.imus[0], &sample);
+-	os_mutex_lock(&acfs->imu_lock);
+ 	acfs->last_imu_ns = sample.timestamp_ns;
+ 	acfs->imus_pushed++;
+ 	os_mutex_unlock(&acfs->imu_lock);
+@@ -775,6 +782,14 @@
+ static void
+ acfs_stop(struct android_camera_fs *acfs)
+ {
++	// Detach the sinks first, before the IMU thread is joined and before
++	// the camera is closed: from this moment, callbacks already in flight
++	// drop their frames and samples instead of pushing them into a
++	// tracker that the service may already be destroying.
++	os_mutex_lock(&acfs->imu_lock);
++	acfs->sinks_detached = true;
++	os_mutex_unlock(&acfs->imu_lock);
++
+ 	if (!acfs->is_running) {
+ 		return;
+ 	}
+@@ -838,6 +853,9 @@
+ {
+ 	struct android_camera_fs *acfs = android_camera_fs(xfs);
+ 	acfs->sinks = *sinks;
++	os_mutex_lock(&acfs->imu_lock);
++	acfs->sinks_detached = false;
++	os_mutex_unlock(&acfs->imu_lock);
+ 	return acfs_start(acfs) ? XRT_SUCCESS : XRT_ERROR_DEVICE_CREATION_FAILED;
+ }
+ 
