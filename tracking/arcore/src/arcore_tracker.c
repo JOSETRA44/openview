@@ -283,3 +283,9 @@ out:
 	ov_arcore_release_env(attached);
 	return result;
 }
+
+bool
+ov_arcore_tracker_owns(const struct xrt_tracked_slam *xts)
+{
+	return xts != NULL && xts->get_tracked_pose == ov_arcore_get_tracked_pose;
+}

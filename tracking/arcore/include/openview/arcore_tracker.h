@@ -7,10 +7,12 @@
  * ARCore runs in the runtime's own process (dev.openview.runtime.tracking.ArCoreTracker,
  * on a Java thread: its C API calls back into Java classes that a native thread cannot
  * load). Poses come back through a registered native method and are handed to the
- * Android device exactly like the VIT tracker's, so the device's fusion, alignment
- * and hold logic apply unchanged.
+ * Android device exactly like the VIT tracker's, so the device's fusion and alignment
+ * apply unchanged (the one camera VIO corrections of patch 0009 do not).
  */
 #pragma once
+
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +30,13 @@ struct xrt_tracked_slam;
  */
 int
 ov_arcore_tracker_create(struct xrt_frame_context *xfctx, struct xrt_tracked_slam **out_xts);
+
+/*!
+ * Whether @p xts is the ARCore tracker. Its translation is real, so the
+ * Android device does not apply the corrections meant for one camera VIO.
+ */
+bool
+ov_arcore_tracker_owns(const struct xrt_tracked_slam *xts);
 
 #ifdef __cplusplus
 }

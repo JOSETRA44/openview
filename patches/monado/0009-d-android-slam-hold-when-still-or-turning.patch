@@ -9,18 +9,24 @@ absorbed (its world is re-aligned onto the held position) when the gyro and
 accelerometer have been quiet for 300 ms, or when the head turns faster than
 0.6 rad/s and the tracker claims more translation than a head swinging on the
 neck can make. ANDROID_SLAM_HOLD=false (debug.xrt.ANDROID_SLAM_HOLD) turns it
-off for comparison; the status line reports the metres absorbed.
+off for comparison; the status line reports the metres absorbed. Trackers that
+do not drift this way (ARCore, see patch 0010) are left alone: absorbing their
+real translation would shift the world.
 
 ---
 diff --git a/src/xrt/drivers/android/android_sensors.c b/src/xrt/drivers/android/android_sensors.c
-index 0d72657..af1fcb6 100644
+index 0d72657..b14c244 100644
 --- a/src/xrt/drivers/android/android_sensors.c
 +++ b/src/xrt/drivers/android/android_sensors.c
-@@ -51,6 +51,32 @@
+@@ -51,6 +51,36 @@
  
  
  DEBUG_GET_ONCE_LOG_OPTION(android_log, "ANDROID_SENSORS_LOG", U_LOGGING_WARN)
 +DEBUG_GET_ONCE_BOOL_OPTION(android_slam_hold, "ANDROID_SLAM_HOLD", true)
++
++#ifdef OPENVIEW_HAVE_ARCORE
++#include "openview/arcore_tracker.h"
++#endif
 +
 +/*
 + * A single camera cannot tell a small translation from depth while the head
@@ -49,7 +55,7 @@ index 0d72657..af1fcb6 100644
  
  static inline struct android_device *
  android_device(struct xrt_device *xdev)
-@@ -161,6 +187,35 @@ load_cardboard_distortion(struct android_device *d,
+@@ -161,6 +191,35 @@ load_cardboard_distortion(struct android_device *d,
   * The two only drift apart while the device is suspended, so the offset is
   * resampled on every call instead of being cached.
   */
@@ -85,7 +91,7 @@ index 0d72657..af1fcb6 100644
  static int64_t
  android_sensor_time_to_monotonic_ns(int64_t sensor_timestamp_ns)
  {
-@@ -263,6 +318,7 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
+@@ -263,6 +322,7 @@ android_sensor_callback(ASensorEvent *event, struct android_device *d)
  		os_mutex_lock(&d->lock);
  
  		m_imu_3dof_update(&d->fusion, event->timestamp, &d->last_accel, &gyro);
@@ -93,7 +99,7 @@ index 0d72657..af1fcb6 100644
  
  		struct xrt_space_relation rel = XRT_SPACE_RELATION_ZERO;
  		rel.relation_flags = (enum xrt_space_relation_flags)(XRT_SPACE_RELATION_ORIENTATION_VALID_BIT |
-@@ -530,12 +586,38 @@ android_slam_stop_tracking_locked(struct android_device *d, const char *why)
+@@ -530,12 +590,38 @@ android_slam_stop_tracking_locked(struct android_device *d, const char *why)
   *
   * @param fusion_rel The 3DoF relation for the requested time, updated in place.
   */
@@ -103,9 +109,9 @@ index 0d72657..af1fcb6 100644
 + * head turns and the step is more than the turn explains.
 + */
 +static int
-+android_slam_hold_reason(bool still, const struct xrt_space_relation *fusion_rel, struct xrt_vec3 step, float dt_s)
++android_slam_hold_reason(bool enabled, bool still, const struct xrt_space_relation *fusion_rel, struct xrt_vec3 step, float dt_s)
 +{
-+	if (!debug_get_bool_option_android_slam_hold()) {
++	if (!enabled) {
 +		return 0;
 +	}
 +	if (still) {
@@ -132,7 +138,7 @@ index 0d72657..af1fcb6 100644
  	struct xrt_space_relation slam_rel = XRT_SPACE_RELATION_ZERO;
  	xrt_tracked_slam_get_tracked_pose(d->slam, at_timestamp_ns, &slam_rel);
  
-@@ -560,6 +642,7 @@ android_slam_update_locked(struct android_device *d,
+@@ -560,6 +646,7 @@ android_slam_update_locked(struct android_device *d,
  		if (d->slam_state.have_last_pose) {
  			struct xrt_vec3 delta = m_vec3_sub(pose.position, d->slam_state.last_pose.position);
  			float dt_s = (float)time_ns_to_s(now_ns - d->slam_state.last_change_ns);
@@ -140,14 +146,15 @@ index 0d72657..af1fcb6 100644
  			// Poses arrive in bursts, so the interval is floored at one camera frame.
  			plausible = m_vec3_len(delta) / MAX(dt_s, 0.033f) < ANDROID_SLAM_MAX_SPEED_M_S;
  		}
-@@ -593,7 +676,20 @@ android_slam_update_locked(struct android_device *d,
+@@ -593,7 +680,21 @@ android_slam_update_locked(struct android_device *d,
  	if (d->slam_state.tracking) {
  		struct xrt_vec3 rotated =
  		    android_yaw_rotate(d->slam_state.align_yaw, &d->slam_state.last_pose.position);
 -		d->slam_state.position = m_vec3_add(rotated, d->slam_state.align_pos);
 +		struct xrt_vec3 candidate = m_vec3_add(rotated, d->slam_state.align_pos);
 +		struct xrt_vec3 step = m_vec3_sub(candidate, d->slam_state.position);
-+		int hold = is_new ? android_slam_hold_reason(still, fusion_rel, step, pose_dt_s) : 0;
++		int hold = is_new ? android_slam_hold_reason(d->slam_state.hold_enabled, still, fusion_rel, step, pose_dt_s)
++		                  : 0;
 +		if (hold != 0) {
 +			// Re-align the tracker's world so this pose lands where the head is held.
 +			d->slam_state.align_pos = m_vec3_sub(d->slam_state.position, rotated);
@@ -162,7 +169,7 @@ index 0d72657..af1fcb6 100644
  
  		// Steer the fusion's heading towards the tracker's, only on a new estimate and
  		// while the head is nearly still: the tracker's orientation is a camera frame
-@@ -635,12 +731,16 @@ android_slam_update_locked(struct android_device *d,
+@@ -635,12 +736,16 @@ android_slam_update_locked(struct android_device *d,
  			                        ? "tracking"
  			                        : (d->slam_state.have_last_pose ? "not trusted" : "no poses yet");
  			ANDROID_SLAM_LOG(
@@ -181,7 +188,7 @@ index 0d72657..af1fcb6 100644
  	}
  }
  
-@@ -666,6 +766,7 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+@@ -666,6 +771,7 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
  	enum m_relation_history_result res = m_relation_history_get(d->relation_hist, query_ns, &new_relation);
  
  	os_mutex_lock(&d->lock);
@@ -189,7 +196,7 @@ index 0d72657..af1fcb6 100644
  	int64_t horizon_ns = at_timestamp_ns - now_ns;
  	d->stats.pose_count++;
  	d->stats.horizon_sum_ns += horizon_ns;
-@@ -688,7 +789,7 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
+@@ -688,7 +794,7 @@ android_device_get_tracked_pose(struct xrt_device *xdev,
  	// With a SLAM tracker the position, and a slow heading correction, come from it.
  	if (d->slam != NULL) {
  		os_mutex_lock(&d->slam_state.lock);
@@ -198,8 +205,24 @@ index 0d72657..af1fcb6 100644
  		os_mutex_unlock(&d->slam_state.lock);
  	}
  
+@@ -826,7 +932,14 @@ android_device_create(struct xrt_prober *xp)
+ 		snprintf(d->tracking_origin.name, XRT_TRACKING_NAME_LEN, "%s", "Android SLAM Tracker");
+ 		d->base.tracking_origin = &d->tracking_origin;
+ 		d->base.supported.position_tracking = true;
+-		U_LOG_IFL_I(U_LOGGING_INFO, "SLAM tracker attached: 6DoF once it starts tracking, 3DoF until then");
++		d->slam_state.hold_enabled = debug_get_bool_option_android_slam_hold();
++#ifdef OPENVIEW_HAVE_ARCORE
++		if (ov_arcore_tracker_owns(d->slam)) {
++			d->slam_state.hold_enabled = false;
++		}
++#endif
++		U_LOG_IFL_I(U_LOGGING_INFO, "SLAM tracker attached: 6DoF once it starts tracking, 3DoF until then; hold %s",
++		            d->slam_state.hold_enabled ? "on" : "off");
+ 	} else {
+ 		d->slam = NULL;
+ 		U_LOG_IFL_I(U_LOGGING_INFO, "No SLAM tracker: 3DoF only");
 diff --git a/src/xrt/drivers/android/android_sensors.h b/src/xrt/drivers/android/android_sensors.h
-index bfff737..3b67659 100644
+index bfff737..4172ddb 100644
 --- a/src/xrt/drivers/android/android_sensors.h
 +++ b/src/xrt/drivers/android/android_sensors.h
 @@ -48,6 +48,18 @@ struct android_device
@@ -221,10 +244,14 @@ index bfff737..3b67659 100644
  		//! Timing of the current one second window, see android_stats_report_locked.
  		struct
  		{
-@@ -105,6 +117,9 @@ struct android_device
+@@ -105,6 +117,13 @@ struct android_device
  		//! Status line bookkeeping.
  		int64_t last_log_ns;
  		uint32_t new_pose_count;
++		//! The hold rules apply: the tracker drifts when still and invents translation
++		//! when turning (one camera VIO). Off for trackers that do not, such as ARCore,
++		//! whose translation is real and absorbing it would shift the world.
++		bool hold_enabled;
 +		//! Tracker translation absorbed since the last status line, see android_slam_hold_reason.
 +		float held_still_m;
 +		float held_turn_m;
