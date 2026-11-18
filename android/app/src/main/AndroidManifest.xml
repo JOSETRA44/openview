@@ -78,5 +78,7 @@
                 <action android:name="org.khronos.openxr.OpenXRRuntimeService" />
             </intent-filter>
         </service>
+        <!-- ARCore is optional: phones without it keep the SLAM tracker or 3DoF. -->
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
     </application>
 </manifest>

@@ -42,6 +42,10 @@ jobs:
           python3 tools/sensor-recorder/test_analyze.py
           python3 tools/bench/test_ate.py
           python3 tools/display-timing/test_measure.py
+          cc -std=c11 -Wall -Wextra -Werror -I tracking/arcore/src tracking/arcore/tests/arcore_convention_test.c -o /tmp/arcore_convention_test -lm
+          /tmp/arcore_convention_test
+          c++ -std=c++17 -Wall -Wextra -Werror -I android/experience/src/main/cpp android/experience/tests/spatial_window_test.cpp -o /tmp/spatial_window_test
+          /tmp/spatial_window_test
           c++ -std=c++17 android/experience/tests/camera_uv_test.cpp -o /tmp/camera_uv_test
           /tmp/camera_uv_test
 
@@ -134,7 +138,9 @@ jobs:
       - name: Android client build tools
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264" "cmake;3.22.1" > /dev/null
       - name: Build OpenView experience
-        run: ./gradlew --no-daemon :experience:assembleDebug
+        run: ./gradlew --no-daemon :experience:assembleDebug :experience:testDebugUnitTest
+      - name: Tracking-test analyser
+        run: python3 -m unittest discover -s tools/tracking-test -p 'test_*.py' -v
       - uses: actions/upload-artifact@v4
         with:
           name: openview-experience-debug-apk

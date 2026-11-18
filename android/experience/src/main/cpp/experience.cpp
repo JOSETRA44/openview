@@ -21,6 +21,7 @@
 #include <vector>
 #include "camera_uv.h"
 #include "gaze_interaction.h"
+#include "domain/spatial_window.h"
 
 #define INFO(...) __android_log_print(ANDROID_LOG_INFO, "OpenViewXR", __VA_ARGS__)
 #define ERROR(...) __android_log_print(ANDROID_LOG_ERROR, "OpenViewXR", __VA_ARGS__)
@@ -86,6 +87,21 @@ struct Eye {
 
 struct Experience {
     std::atomic<bool> stop{false}, cameraWanted{false}, recenter{true}, activate{false}, anchorRequested{false};
+    //! Index of the running guided-test step, -1 when no test runs. Set from the UI thread.
+    std::atomic<int> testStep{-1};
+    double lastTestSample=-1;
+    // Moving windows: the UI reports a held press (touch, Cardboard button or gamepad A);
+    // holding it on a window for kGrabHoldSeconds grabs that window.
+    static constexpr double kGrabHoldSeconds=.35;
+    std::atomic<bool> holdDown{false}, resetLayout{false};
+    std::atomic<float> pendingPush{0.f};
+    openview::WindowGrab grab;
+    // A move started from a "Mover" tile: no button is held, a still head places it.
+    std::atomic<int> moveRequest{-1};
+    bool gazeMove=false;
+    openview::GazeSettle settle;
+    int grabbedPanel=-1;
+    double holdStart=-1, lastInteraction=-1;
     jobject activity=nullptr;
     JavaVM *vm=nullptr;
     JNIEnv *env=nullptr;
@@ -113,15 +129,20 @@ struct Experience {
     // Floating panels: Android views drawn into external textures by the activity.
     // Positions are metres in the recentred local space; the viewer sits at the origin
     // looking down -Z. Panel 0 is the home, panel 1 the status column angled beside it.
+    // Panel 2 is the guided-test prompt: head locked (its pose is relative to the head),
+    // shown only while a test runs and never a gaze target.
     struct Panel {
         float x,y,z,yaw,width,height;
+        bool headLocked=false;
         GLuint texture=0;
         jfloatArray transformArray=nullptr;
         Mat transform=identity();
         bool attached=false,ready=false;
     };
-    static constexpr int kPanels=2;
-    std::array<Panel,kPanels> panels{{{0.f,.05f,-2.f,0.f,1.6f,1.f},{1.15f,.05f,-1.83f,-.5f,.7f,1.f}}};
+    static constexpr int kPanels=3;
+    static constexpr std::array<openview::WindowPose,kPanels> kDefaults{{{0.f,.05f,-2.f,0.f},{1.15f,.05f,-1.83f,-.5f},{0.f,-.16f,-1.25f,0.f}}};
+    std::array<Panel,kPanels> panels{{{0.f,.05f,-2.f,0.f,1.6f,1.f},{1.15f,.05f,-1.83f,-.5f,.7f,1.f},
+        {0.f,-.16f,-1.25f,0.f,.9f,.36f,true}}};
     jmethodID panelCreate=nullptr,panelUpdate=nullptr,panelHover=nullptr,panelClick=nullptr,panelRelease=nullptr;
     GLuint panelProgram=0;
     bool srgbTarget=false;
@@ -129,7 +150,7 @@ struct Experience {
     bool gazeValid=false;
     float gazeDistance=2.5f;
     uint64_t frames=0,cameraFrames=0;
-    jmethodID updateDiagnosticMethod=nullptr;
+    jmethodID updateDiagnosticMethod=nullptr,loadPanelMethod=nullptr,savePanelMethod=nullptr,grabChangedMethod=nullptr;
     std::chrono::steady_clock::time_point lastDiagTime{};
     uint32_t diagFrames=0;
 
@@ -146,12 +167,17 @@ struct Experience {
         panelCreate=env->GetMethodID(cls,"createPanelTexture","(II)Z");
         panelUpdate=env->GetMethodID(cls,"updatePanelTexture","(I[F)Z");
         panelHover=env->GetMethodID(cls,"panelHover","(IFF)I");
-        panelClick=env->GetMethodID(cls,"panelClick","(II)V");
+        panelClick=env->GetMethodID(cls,"panelClick","(IIZ)V");
         panelRelease=env->GetMethodID(cls,"releasePanelTextures","()V");
         updateDiagnosticMethod=env->GetMethodID(cls,"updateDiagnostic","(FFFZF)V");
+        loadPanelMethod=env->GetMethodID(cls,"loadPanelPose","(I[F)Z");
+        savePanelMethod=env->GetMethodID(cls,"savePanelPose","(IFFFF)V");
+        grabChangedMethod=env->GetMethodID(cls,"onGrabChanged","(Z)V");
         env->DeleteLocalRef(cls); javaCheck();
         if(!cameraCreate||!cameraUpdate||!cameraRelease||!cameraAspectMethod||!cameraRotationMethod) throw std::runtime_error("Camera JNI contract missing");
         if(!panelCreate||!panelUpdate||!panelHover||!panelClick||!panelRelease||!updateDiagnosticMethod) throw std::runtime_error("Panel JNI contract missing");
+        if(!loadPanelMethod||!savePanelMethod||!grabChangedMethod) throw std::runtime_error("Window layout JNI contract missing");
+        loadLayout();
         cameraTransformArray=env->NewFloatArray(16);
 
         PFN_xrInitializeLoaderKHR initialize=nullptr;
@@ -262,6 +288,32 @@ struct Experience {
         INFO("OpenXR initialized; stereo=%u GLES=%d.%d eye=%ux%u",viewCount,major,minor,eyes[0].width,eyes[0].height);
     }
 
+    // Windows come back where the user left them. Only world windows are stored.
+    void loadLayout() {
+        jfloatArray pose=env->NewFloatArray(4);
+        for(int i=0;i<kPanels;++i) {
+            if(panels[i].headLocked) continue;
+            const bool found=env->CallBooleanMethod(activity,loadPanelMethod,static_cast<jint>(i),pose); javaCheck();
+            if(!found) continue;
+            float v[4]; env->GetFloatArrayRegion(pose,0,4,v);
+            if(std::isfinite(v[0])&&std::isfinite(v[1])&&std::isfinite(v[2])&&std::isfinite(v[3])) {
+                panels[i].x=v[0]; panels[i].y=v[1]; panels[i].z=v[2]; panels[i].yaw=v[3];
+            }
+        }
+        env->DeleteLocalRef(pose);
+    }
+    void saveLayout(int i) {
+        const auto &p=panels[i];
+        env->CallVoidMethod(activity,savePanelMethod,static_cast<jint>(i),p.x,p.y,p.z,p.yaw); javaCheck();
+    }
+    void restoreDefaultLayout() {
+        for(int i=0;i<kPanels;++i) {
+            if(panels[i].headLocked) continue;
+            panels[i].x=kDefaults[i].x; panels[i].y=kDefaults[i].y; panels[i].z=kDefaults[i].z; panels[i].yaw=kDefaults[i].yaw;
+            saveLayout(i);
+        }
+        INFO("window layout reset");
+    }
     void updateCamera() {
         if(cameraWanted.load() && !cameraActive) {
             cameraActive=env->CallBooleanMethod(activity,cameraCreate,static_cast<jint>(cameraTexture)); javaCheck();
@@ -341,7 +393,7 @@ struct Experience {
     // panel's bottom left corner. Infinity when the ray misses or comes from behind.
     static float rayPanel(const Panel &p, openview::GazeVector o, openview::GazeVector d, float &u, float &v) {
         const float miss=std::numeric_limits<float>::infinity();
-        if(!p.ready) return miss;
+        if(!p.ready || p.headLocked) return miss;
         const float c=std::cos(p.yaw),s=std::sin(p.yaw);
         const float rx=o.x-p.x,ry=o.y-p.y,rz=o.z-p.z;
         const float lx=c*rx-s*rz,lz=s*rx+c*rz;
@@ -369,8 +421,10 @@ struct Experience {
         glUniform1f(glGetUniformLocation(panelProgram,"gamma"),srgbTarget?2.2f:1.f);
         for(const auto &panel:panels) {
             if(!panel.ready) continue;
+            if(panel.headLocked && (testStep.load()<0 || !gazeValid)) continue;
             glBindTexture(GL_TEXTURE_EXTERNAL_OES,panel.texture);
-            const auto mvp=multiply(viewProjection,panelModel(panel));
+            const auto model=panel.headLocked?multiply(gazePose,panelModel(panel)):panelModel(panel);
+            const auto mvp=multiply(viewProjection,model);
             glUniformMatrix4fv(glGetUniformLocation(panelProgram,"mvp"),1,GL_FALSE,mvp.data());
             glUniformMatrix4fv(glGetUniformLocation(panelProgram,"tex"),1,GL_FALSE,panel.transform.data());
             glUniform2f(glGetUniformLocation(panelProgram,"size"),panel.width,panel.height);
@@ -396,10 +450,46 @@ struct Experience {
             float u=0,v=0; const float distance=rayPanel(panels[i],origin,direction,u,v);
             if(distance<nearest) { nearest=distance; hitPanel=i; hitU=u; hitV=v; }
         }
+        if(resetLayout.exchange(false)) restoreDefaultLayout();
+        const double dt=lastInteraction<0?0.:seconds-lastInteraction;
+        lastInteraction=seconds;
+        const bool held=holdDown.load();
+        if(!held) holdStart=-1; else if(holdStart<0) holdStart=seconds;
+        if(grab.active()) {
+            if(const float push=pendingPush.exchange(0.f); push!=0.f) grab.changeDistance(push);
+            auto &panel=panels[grabbedPanel];
+            const auto moved=grab.update(origin,direction,dt);
+            panel.x=moved.x; panel.y=moved.y; panel.z=moved.z; panel.yaw=moved.yaw;
+            const bool release=gazeMove?(settle.update(direction,dt)||trigger):!held;
+            if(release) {
+                gazeMove=false;
+                grab.end(); saveLayout(grabbedPanel);
+                INFO("window %d placed at %.2f %.2f %.2f yaw %.2f",grabbedPanel,panel.x,panel.y,panel.z,panel.yaw);
+                env->CallVoidMethod(activity,grabChangedMethod,static_cast<jboolean>(false)); javaCheck();
+                grabbedPanel=-1;
+            }
+            // No dwell or clicks while carrying a window.
+            gaze.reset(); activate=false;
+            hitPanel=-1;
+        } else if(const int request=moveRequest.exchange(-1); request>=0 && request<kPanels && !panels[request].headLocked) {
+            auto &panel=panels[request];
+            grab.begin({panel.x,panel.y,panel.z,panel.yaw},origin);
+            grabbedPanel=request; gazeMove=true; settle.reset(); pendingPush=0.f;
+            INFO("window %d moving with the gaze at %.2f m",request,grab.distance());
+            env->CallVoidMethod(activity,grabChangedMethod,static_cast<jboolean>(true)); javaCheck();
+            gaze.reset(); hitPanel=-1;
+        } else if(held && hitPanel>=0 && seconds-holdStart>=kGrabHoldSeconds) {
+            auto &panel=panels[hitPanel];
+            grab.begin({panel.x,panel.y,panel.z,panel.yaw},origin);
+            grabbedPanel=hitPanel; pendingPush=0.f;
+            INFO("window %d grabbed at %.2f m",hitPanel,grab.distance());
+            env->CallVoidMethod(activity,grabChangedMethod,static_cast<jboolean>(true)); javaCheck();
+            gaze.reset(); hitPanel=-1;
+        }
         // Every panel hears where the gaze is, so the one just left clears its highlight.
         int hit=-1;
         for(int i=0;i<kPanels;++i) {
-            if(!panels[i].ready) continue;
+            if(!panels[i].ready || panels[i].headLocked) continue;
             const bool on=i==hitPanel;
             const jint tile=env->CallIntMethod(activity,panelHover,static_cast<jint>(i),
                 static_cast<jfloat>(on?hitU:-1.f),static_cast<jfloat>(on?hitV:-1.f)); javaCheck();
@@ -407,18 +497,24 @@ struct Experience {
         }
         if(hit!=gaze.target) INFO("gaze target=%d",hit);
         if(gaze.update(hit,seconds,trigger)) {
-            env->CallVoidMethod(activity,panelClick,static_cast<jint>(hit/100),static_cast<jint>(hit%100)); javaCheck();
+            // The UI decides whether a dwell may trigger that tile (leaving or launching may not).
+            env->CallVoidMethod(activity,panelClick,static_cast<jint>(hit/100),static_cast<jint>(hit%100),
+                static_cast<jboolean>(!trigger)); javaCheck();
             INFO("interaction panel=%d tile=%d source=%s",hit/100,hit%100,trigger?"tap":"dwell");
         }
-        gazeDistance=hitPanel>=0?nearest:2.5f;
+        gazeDistance=grab.active()?grab.distance():hitPanel>=0?nearest:2.5f;
         reticle.clear();
         const float inner=.008f*gazeDistance,outer=.012f*gazeDistance;
         for(int i=0;i<48;++i) {
             const float a=i*2*PI/48,b=(i+1)*2*PI/48;
-            const bool filled=hit>=0 && float(i)/48<gaze.progress;
-            const float r=filled?.98f:hit>=0?.35f:.75f;
-            const float g=filled?.74f:hit>=0?.95f:.85f;
-            const float blue=filled?.30f:hit>=0?.76f:.88f;
+            // Carrying a window, the ring fills while the head holds still to place it.
+            const bool carrying=grab.active();
+            const float fill=carrying?(gazeMove?settle.progress():0.f):gaze.progress;
+            const bool targeted=hit>=0||carrying;
+            const bool filled=targeted && float(i)/48<fill;
+            const float r=filled?.98f:targeted?.35f:.75f;
+            const float g=filled?.74f:targeted?.95f:.85f;
+            const float blue=filled?.30f:targeted?.76f:.88f;
             for(auto p:std::array<std::array<float,2>,6>{{{inner*std::cos(a),inner*std::sin(a)},
                 {outer*std::cos(a),outer*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
                 {inner*std::cos(a),inner*std::sin(a)},{outer*std::cos(b),outer*std::sin(b)},
@@ -461,6 +557,23 @@ struct Experience {
             }
         }
     }
+    // One OV_TEST line about every 66 ms while a guided test runs: the head (the middle of
+    // the two eyes) in the recentred local space, its heading and pitch in degrees, and
+    // the runtime's flags (V position valid, T position tracked). tools/tracking-test reads it.
+    void logTestSample(double seconds, const std::array<XrView,2> &views, XrViewStateFlags flags) {
+        const int step=testStep.load();
+        if(step<0) { lastTestSample=-1; return; }
+        if(lastTestSample>=0 && seconds-lastTestSample<.066) return;
+        lastTestSample=seconds;
+        const auto &a=views[0].pose.position, &b=views[1].pose.position;
+        const auto q=views[0].pose.orientation;
+        const float yaw=std::atan2(2*(q.w*q.y+q.x*q.z),1-2*(q.y*q.y+q.x*q.x))*180/PI;
+        const float sinPitch=std::clamp(2*(q.w*q.x-q.y*q.z),-1.f,1.f);
+        const float pitch=std::asin(sinPitch)*180/PI;
+        INFO("OV_TEST t=%.3f step=%d pos=%.4f,%.4f,%.4f yaw=%.1f pitch=%.1f flags=%c%c",seconds,step,
+            (a.x+b.x)*.5f,(a.y+b.y)*.5f,(a.z+b.z)*.5f,yaw,pitch,
+            (flags&XR_VIEW_STATE_POSITION_VALID_BIT)?'V':'-',(flags&XR_VIEW_STATE_POSITION_TRACKED_BIT)?'T':'-');
+    }
     void frame(double seconds) {
         XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState state{XR_TYPE_FRAME_STATE}; XR(xrWaitFrame(session,&wait,&state));
         XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO}; XR(xrBeginFrame(session,&begin));
@@ -478,6 +591,7 @@ struct Experience {
             XrViewState viewState{XR_TYPE_VIEW_STATE}; uint32_t count=0;
             XR(xrLocateViews(session,&locate,&viewState,2,&count,views.data()));
             if(count==2 && (viewState.viewStateFlags&XR_VIEW_STATE_ORIENTATION_VALID_BIT)) {
+                logTestSample(seconds,views,viewState.viewStateFlags);
                 ++diagFrames;
                 auto nowDiag=std::chrono::steady_clock::now();
                 double elapsedDiag=std::chrono::duration<double>(nowDiag-lastDiagTime).count();
@@ -631,6 +745,21 @@ extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nati
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeCamera(JNIEnv*,jobject,jlong handle,jboolean value) {
     reinterpret_cast<Experience*>(handle)->cameraWanted=value;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeHold(JNIEnv*,jobject,jlong handle,jboolean down) {
+    reinterpret_cast<Experience*>(handle)->holdDown=down;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativePushWindow(JNIEnv*,jobject,jlong handle,jfloat metres) {
+    auto *app=reinterpret_cast<Experience*>(handle); app->pendingPush=app->pendingPush.load()+metres;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeBeginMove(JNIEnv*,jobject,jlong handle,jint panel) {
+    reinterpret_cast<Experience*>(handle)->moveRequest=panel;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeResetLayout(JNIEnv*,jobject,jlong handle) {
+    reinterpret_cast<Experience*>(handle)->resetLayout=true;
+}
+extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeTestStep(JNIEnv*,jobject,jlong handle,jint step) {
+    reinterpret_cast<Experience*>(handle)->testStep=step;
 }
 extern "C" JNIEXPORT void JNICALL Java_dev_openview_experience_MainActivity_nativeActivate(JNIEnv*,jobject,jlong handle) {
     reinterpret_cast<Experience*>(handle)->activate=true;

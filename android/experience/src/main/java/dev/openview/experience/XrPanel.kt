@@ -32,8 +32,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * that the main thread publishes after each layout.
  */
 class XrPanel(private val context: Context, val widthPx: Int, val heightPx: Int) {
-    /** One thing the user can select by looking at it. */
-    class Tile(val view: TextView, val action: () -> Unit)
+    /**
+     * One thing the user can select by looking at it. A tile with [dwell] false
+     * needs a tap or a button: looking at it is not enough. Leaving the space or
+     * launching another app must not happen because a phone lay on a table
+     * staring at that button.
+     */
+    class Tile(val view: TextView, val dwell: Boolean = true, val action: () -> Unit)
 
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
@@ -128,9 +133,16 @@ class XrPanel(private val context: Context, val widthPx: Int, val heightPx: Int)
         return hit
     }
 
-    /** Render thread. */
-    fun click(index: Int) {
-        main.post { tiles.getOrNull(index)?.action?.invoke() }
+    /** Render thread. [fromDwell] is true when the gaze rested on the tile, false for a tap. */
+    fun click(index: Int, fromDwell: Boolean) {
+        main.post {
+            val tile = tiles.getOrNull(index) ?: return@post
+            if (fromDwell && !tile.dwell) {
+                Log.i(TAG, "dwell ignored on a tap-only tile index=$index")
+                return@post
+            }
+            tile.action()
+        }
     }
 
     /** Render thread, EGL context current. */
@@ -165,7 +177,8 @@ class XrPanel(private val context: Context, val widthPx: Int, val heightPx: Int)
             }
 
         /** A selectable tile: lights up while looked at. */
-        fun tile(context: Context, title: String, subtitle: String, icon: Drawable?, action: () -> Unit): Tile {
+        fun tile(context: Context, title: String, subtitle: String, icon: Drawable?, dwell: Boolean = true,
+                 action: () -> Unit): Tile {
             val normal = GradientDrawable().apply { setColor(Color.argb(255, 34, 46, 58)); cornerRadius = 30f }
             val selected = GradientDrawable().apply {
                 setColor(Color.argb(255, 44, 78, 82)); cornerRadius = 30f; setStroke(5, ACCENT)
@@ -192,7 +205,7 @@ class XrPanel(private val context: Context, val widthPx: Int, val heightPx: Int)
                     compoundDrawablePadding = 30
                 }
             }
-            return Tile(view, action)
+            return Tile(view, dwell, action)
         }
 
         fun row(context: Context): LinearLayout = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }

@@ -21,6 +21,8 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import dev.openview.experience.test.GuidedTestController
+import dev.openview.experience.test.TestStep
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
@@ -29,6 +31,10 @@ class MainActivity : Activity() {
     companion object {
         init { System.loadLibrary("openxr_loader"); System.loadLibrary("openview-experience") }
         private const val TAG = "OpenViewXR"
+        /** A press shorter than this is a tap; longer, on a window, is a grab. */
+        private const val TAP_MAX_MS = 300L
+        /** How far one volume key event pushes a carried window. */
+        private const val PUSH_STEP_M = 0.15f
     }
     private external fun nativeCreate(): Long
     private external fun nativeRun(handle: Long): String?
@@ -37,6 +43,11 @@ class MainActivity : Activity() {
     private external fun nativeAnchor(handle: Long)
     private external fun nativeCamera(handle: Long, enabled: Boolean)
     private external fun nativeActivate(handle: Long)
+    private external fun nativeTestStep(handle: Long, step: Int)
+    private external fun nativeHold(handle: Long, down: Boolean)
+    private external fun nativePushWindow(handle: Long, metres: Float)
+    private external fun nativeResetLayout(handle: Long)
+    private external fun nativeBeginMove(handle: Long, panel: Int)
     private external fun nativeDestroy(handle: Long)
     private val engineLock = Any()
     private var engine = 0L
@@ -66,6 +77,16 @@ class MainActivity : Activity() {
     private lateinit var detailText: TextView
     private lateinit var diagText: TextView
     private lateinit var statusDiagText: TextView
+    private lateinit var guideTitle: TextView
+    private lateinit var guideDetail: TextView
+    private lateinit var guidedTest: GuidedTestController
+    /** Index of the running test step, mirrored to native code whenever an engine starts. */
+    private var testStep = -1
+    private var pendingTest = false
+    private lateinit var layout: WindowLayoutStore
+    /** A window is being carried: volume keys push and pull it instead of their usual job. */
+    @Volatile private var carrying = false
+    private var pressStartedAt = 0L
     private val uiHandler = Handler(android.os.Looper.getMainLooper())
     private val clockTick = object : Runnable {
         override fun run() {
@@ -77,6 +98,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wantsCamera = savedInstanceState?.getBoolean("camera") ?: intent.getBooleanExtra("camera", false)
+        layout = WindowLayoutStore(this)
+        // `adb shell am start -n dev.openview.experience/.MainActivity --ez test true` starts the guided test.
+        pendingTest = savedInstanceState == null && intent.getBooleanExtra("test", false)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY)
@@ -105,11 +129,15 @@ class MainActivity : Activity() {
                 text = "Fijar punto aquí"; setOnClickListener { anchorPoint() }
             })
             addView(Button(this@MainActivity).apply {
+                text = "Prueba de seguimiento"; setOnClickListener { startGuidedTest() }
+            })
+            addView(Button(this@MainActivity).apply {
                 text = "Cámara / espacio"; setOnClickListener { setCamera(!wantsCamera) }
             })
             addView(Button(this@MainActivity).apply { text = "Salir"; setOnClickListener { finish() } })
         })
         buildPanels()
+        guidedTest = GuidedTestController(this, guidedTestListener)
     }
 
     /*
@@ -117,8 +145,10 @@ class MainActivity : Activity() {
      * launcher, panel 1 the status column beside it. Sizes are in texture
      * pixels; the native side decides where they hang and how big they look.
      */
+    private val statusMove by lazy { XrPanel.tile(this, "Mover", "Míralo donde lo quieras", null) { beginMove(1) } }
+
     private fun buildPanels() {
-        panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800))
+        panels = listOf(XrPanel(this, 1280, 800), XrPanel(this, 560, 800), XrPanel(this, 1000, 400))
         clockText = XrPanel.label(this, "", 150f, XrPanel.INK, bold = true)
         detailText = XrPanel.label(this, "", 34f, XrPanel.MUTED).apply { setLineSpacing(14f, 1f) }
         statusDiagText = XrPanel.label(this, "Pos: 0.00, 0.00, 0.00 m · NO TRACKED · -- fps", 24f, XrPanel.ACCENT, bold = true)
@@ -131,9 +161,45 @@ class MainActivity : Activity() {
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
             addView(statusDiagText, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 24 })
+            addView(statusMove.view, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 130)
+                .apply { topMargin = 28 })
+        }, listOf(statusMove))
+        guideTitle = XrPanel.label(this, "", 72f, XrPanel.INK, bold = true).apply { gravity = Gravity.CENTER }
+        guideDetail = XrPanel.label(this, "", 34f, XrPanel.ACCENT).apply { gravity = Gravity.CENTER }
+        panels[2].setContent(LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
+            background = XrPanel.background(this@MainActivity)
+            setPadding(40, 30, 40, 30)
+            addView(guideTitle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT))
+            addView(guideDetail, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = 22 })
         }, emptyList())
         refreshHomePanel()
         updateStatusPanel()
+    }
+
+    private val guidedTestListener = object : GuidedTestController.Listener {
+        override fun onStep(index: Int, step: TestStep?) {
+            testStep = index
+            synchronized(engineLock) { if (engine != 0L) nativeTestStep(engine, index) }
+        }
+        override fun onTick(step: TestStep, index: Int, count: Int, secondsLeft: Int) {
+            guideTitle.text = step.title
+            guideDetail.text = "Paso ${index + 1} de $count · $secondsLeft s"
+            status.text = "Prueba de seguimiento · ${step.title} · $secondsLeft s"
+            panels[2].redraw()
+        }
+        override fun onFinished(cancelled: Boolean) {
+            status.text = if (cancelled) "Prueba cancelada." else "Prueba terminada. Los datos quedaron en el registro."
+        }
+    }
+
+    /** Recentres first, so that "forward" in the log is where the user faces now. */
+    private fun startGuidedTest() {
+        if (guidedTest.running) return
+        recenter()
+        guidedTest.start()
     }
 
     /** Apps that declare themselves immersive OpenXR apps, the same way headsets find them. */
@@ -157,12 +223,16 @@ class MainActivity : Activity() {
         }
         tiles += XrPanel.tile(this, "Centrar vista", "Pone el panel frente a ti", null) { recenter() }
         tiles += XrPanel.tile(this, "Fijar punto aquí", "Deja un marcador donde miras", null) { anchorPoint() }
+        tiles += XrPanel.tile(this, "Prueba de seguimiento", "Te guía paso a paso", null) { startGuidedTest() }
+        tiles += XrPanel.tile(this, "Mover este panel", "Míralo donde lo quieras y quédate quieto", null) { beginMove(0) }
+        tiles += XrPanel.tile(this, "Ordenar ventanas", "Vuelven a su sitio inicial", null) { resetLayout() }
+        // Launching and leaving need a tap: a gaze alone must not end the session.
         for (app in immersiveApps().take(3)) {
             val label = app.loadLabel(packageManager).toString()
             val icon = try { app.loadIcon(packageManager) } catch (e: Exception) { null }
-            tiles += XrPanel.tile(this, label, "App de realidad virtual", icon) { launch(app) }
+            tiles += XrPanel.tile(this, label, "Toca para abrir", icon, dwell = false) { launch(app) }
         }
-        tiles += XrPanel.tile(this, "Salir", "Cierra OpenView", null) { finish() }
+        tiles += XrPanel.tile(this, "Salir", "Toca para cerrar OpenView", null, dwell = false) { finish() }
 
         val column = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -180,11 +250,11 @@ class MainActivity : Activity() {
         for (pair in tiles.chunked(2)) {
             val row = XrPanel.row(this)
             pair.forEachIndexed { index, tile ->
-                row.addView(tile.view, LinearLayout.LayoutParams(0, 170, 1f).apply { if (index == 0) rightMargin = 24 })
+                row.addView(tile.view, LinearLayout.LayoutParams(0, 140, 1f).apply { if (index == 0) rightMargin = 24 })
             }
-            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, 170, 1f))
+            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, 140, 1f))
             column.addView(row, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 22 })
+                LinearLayout.LayoutParams.WRAP_CONTENT).apply { bottomMargin = 14 })
         }
         panels[0].setContent(column, tiles)
     }
@@ -225,13 +295,29 @@ class MainActivity : Activity() {
     fun panelHover(panel: Int, u: Float, v: Float): Int = panels.getOrNull(panel)?.hover(u, v) ?: -1
 
     @Suppress("unused")
-    fun panelClick(panel: Int, index: Int) { panels.getOrNull(panel)?.click(index) }
+    fun panelClick(panel: Int, index: Int, fromDwell: Boolean) { panels.getOrNull(panel)?.click(index, fromDwell) }
 
     @Suppress("unused")
     fun releasePanelTextures() { panels.forEach { it.release() } }
 
     @Suppress("unused")
     fun getPanelAspect(panel: Int): Float = panels.getOrNull(panel)?.let { it.widthPx.toFloat() / it.heightPx } ?: 1f
+
+    // Window layout, called on the render thread.
+    @Suppress("unused")
+    fun loadPanelPose(panel: Int, out: FloatArray): Boolean = layout.load(panel, out)
+
+    @Suppress("unused")
+    fun savePanelPose(panel: Int, x: Float, y: Float, z: Float, yaw: Float) = layout.save(panel, x, y, z, yaw)
+
+    @Suppress("unused")
+    fun onGrabChanged(grabbed: Boolean) {
+        carrying = grabbed
+        uiHandler.post {
+            status.text = if (grabbed) "Moviendo ventana · mira dónde ponerla y quédate quieto para fijarla"
+                else "Ventana fijada. Se quedará ahí la próxima vez."
+        }
+    }
 
     @Suppress("unused")
     fun updateDiagnostic(x: Float, y: Float, z: Float, tracked: Boolean, fps: Float) {
@@ -258,6 +344,11 @@ class MainActivity : Activity() {
         cameraAllowed.set(checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         startEngine()
         if (wantsCamera && !cameraAllowed.get()) requestPermissions(arrayOf(Manifest.permission.CAMERA), 10)
+        if (pendingTest) {
+            pendingTest = false
+            // Give the session a moment to reach FOCUSED so the recentre lands.
+            uiHandler.postDelayed({ if (resumed) startGuidedTest() }, 1500)
+        }
     }
 
     private fun startEngine() {
@@ -265,6 +356,7 @@ class MainActivity : Activity() {
             if (worker != null || !resumed || failed || isFinishing || isDestroyed) return
             engine = nativeCreate()
             nativeCamera(engine, wantsCamera && cameraAllowed.get())
+            nativeTestStep(engine, testStep)
             val handle = engine
             worker = Thread({
                 val error = nativeRun(handle)
@@ -286,10 +378,15 @@ class MainActivity : Activity() {
     override fun onPause() {
         resumed = false
         uiHandler.removeCallbacks(clockTick)
+        guidedTest.cancel()
         synchronized(engineLock) { if (engine != 0L) nativeStop(engine) }
         // Render thread owns the SurfaceTexture and releases it while EGL remains current.
         closeCameraDevice()
         super.onPause()
+    }
+    override fun onDestroy() {
+        guidedTest.shutdown()
+        super.onDestroy()
     }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("camera", wantsCamera)
@@ -311,10 +408,38 @@ class MainActivity : Activity() {
     private fun recenter() { synchronized(engineLock) { if (engine != 0L) nativeRecenter(engine) } }
     fun anchorPoint() { synchronized(engineLock) { if (engine != 0L) nativeAnchor(engine) } }
     private fun activateObject() { synchronized(engineLock) { if (engine != 0L) nativeActivate(engine) } }
+    private fun beginMove(panel: Int) { synchronized(engineLock) { if (engine != 0L) nativeBeginMove(engine, panel) } }
+    private fun resetLayout() { synchronized(engineLock) { if (engine != 0L) nativeResetLayout(engine) } }
+    private fun hold(down: Boolean) { synchronized(engineLock) { if (engine != 0L) nativeHold(engine, down) } }
+    private fun pushWindow(metres: Float) { synchronized(engineLock) { if (engine != 0L) nativePushWindow(engine, metres) } }
+
+    /**
+     * A press is a tap (select what the gaze points at) or, held on a window,
+     * a grab that carries it. The Cardboard button, the touch screen and a
+     * gamepad's A button all arrive here.
+     */
+    private fun pressDown() {
+        pressStartedAt = android.os.SystemClock.uptimeMillis()
+        hold(true)
+    }
+    private fun pressUp() {
+        hold(false)
+        val wasGrab = carrying || android.os.SystemClock.uptimeMillis() - pressStartedAt >= TAP_MAX_MS
+        if (!wasGrab) activateObject()
+    }
     override fun onTouchEvent(event: MotionEvent): Boolean {
         // Some compositors own the touch window. Dwell remains available in that case.
-        if (event.actionMasked == MotionEvent.ACTION_UP) { activateObject(); return true }
-        return event.actionMasked == MotionEvent.ACTION_DOWN || super.onTouchEvent(event)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> { pressDown(); return true }
+            MotionEvent.ACTION_UP -> { pressUp(); return true }
+            MotionEvent.ACTION_CANCEL -> { hold(false); return true }
+        }
+        return super.onTouchEvent(event)
+    }
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_SPACE) { pressUp(); return true }
+        return super.onKeyUp(keyCode, event)
     }
     private fun setCamera(enabled: Boolean) {
         wantsCamera = enabled
@@ -323,12 +448,19 @@ class MainActivity : Activity() {
         } else synchronized(engineLock) { if (engine != 0L) nativeCamera(engine, enabled) }
     }
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (carrying && (keyCode == KeyEvent.KEYCODE_VOLUME_UP || keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)) {
+            // Held keys repeat: the window keeps moving while the key is down.
+            pushWindow(if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) PUSH_STEP_M else -PUSH_STEP_M)
+            return true
+        }
         if (event.repeatCount == 0) {
             if (keyCode == KeyEvent.KEYCODE_VOLUME_UP) { recenter(); return true }
             if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) { setCamera(!wantsCamera); return true }
-            if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-                keyCode == KeyEvent.KEYCODE_SPACE) { activateObject(); return true }
+            if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_ENTER ||
+                keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_SPACE) { pressDown(); return true }
         }
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_SPACE) return true
         return super.onKeyDown(keyCode, event)
     }
 
